@@ -2,6 +2,7 @@ export class PcmPlayer {
   private ctx: AudioContext | null = null;
   private nextTime = 0;
   private sampleRate = 24000;
+  private muted = false;
 
   /** 在用户手势上下文中调用，提前创建并激活 AudioContext。
    *  必须在 handleSse 之前调用，否则浏览器会因 autoplay policy 阻止发声。 */
@@ -29,6 +30,7 @@ export class PcmPlayer {
   }
 
   enqueuePcm16Base64(b64: string, sampleRate = 24000) {
+    if (this.muted) return;
     const ctx = this.ensureCtx();
     if (sampleRate !== this.sampleRate) {
       this.sampleRate = sampleRate;
@@ -49,6 +51,22 @@ export class PcmPlayer {
     const start = Math.max(this.nextTime, ctx.currentTime);
     source.start(start);
     this.nextTime = start + buffer.duration;
+  }
+
+  /** 静音：停止当前播放并阻止后续入队播放 */
+  mute() {
+    this.muted = true;
+    this.stop();
+  }
+
+  /** 取消静音：允许后续入队播放 */
+  unmute() {
+    this.muted = false;
+  }
+
+  /** 是否处于静音状态 */
+  isMuted(): boolean {
+    return this.muted;
   }
 
   stop() {

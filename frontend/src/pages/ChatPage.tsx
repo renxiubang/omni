@@ -25,6 +25,8 @@ export function ChatPage() {
   const [selectedPersona, setSelectedPersona] = useState<string>("");
   /** 用于强制重渲染：voiceAudioUrls ref 变化时递增 */
   const [voiceUrlVersion, setVoiceUrlVersion] = useState(0);
+  /** 正在流式播放音频的 assistant 消息 ID（null 表示未在播放或已中止） */
+  const [streamingAudioId, setStreamingAudioId] = useState<string | null>(null);
   const assistantIdRef = useRef<string | null>(null);
   const pendingUserIdRef = useRef<string | null>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
@@ -39,6 +41,8 @@ export function ChatPage() {
   /** 收集 assistant 的 PCM base64 音频数据，done 时转为 WAV 存入 voiceAudioUrls */
   const assistantAudioChunksRef = useRef<Map<string, string[]>>(new Map());
   const assistantAudioSampleRateRef = useRef<Map<string, number>>(new Map());
+  /** 流式期间点击"从头播放"时创建的临时 WAV URL，用于释放 */
+  const tempWavUrlRef = useRef<string | null>(null);
 
   const handleSse = useCallback(
     (event: string, data: Record<string, unknown>) => {
@@ -83,6 +87,7 @@ export function ChatPage() {
           }
           const id = `asst-${Date.now()}`;
           assistantIdRef.current = id;
+          setStreamingAudioId(id); // 立即显示语音条
           return [
             ...prev,
             {
@@ -110,6 +115,7 @@ export function ChatPage() {
       if (event === "done") {
         const asstId = assistantIdRef.current;
         assistantIdRef.current = null;
+        setStreamingAudioId(null); // 清除流式标记
         setMessages((prev) => {
           const target = prev.find((m) => m.role === "assistant" && m.streaming);
           if (!target) return prev;
@@ -132,6 +138,7 @@ export function ChatPage() {
         }
       }
       if (event === "error") {
+        setStreamingAudioId(null); // 清除流式标记
         setMessages((prev) => {
           const target = prev.find((m) => m.role === "assistant" && m.streaming);
           const next = target
@@ -196,6 +203,7 @@ export function ChatPage() {
       }
       playingVoiceIdRef.current = null;
       setPlayingVoiceId(null);
+      setStreamingAudioId(null);
       playerRef.current.stop();
       playerRef.current = new PcmPlayer();
       playerRef.current.prepare();
@@ -330,6 +338,69 @@ export function ChatPage() {
 
   /** 点击语音条播放 / 暂停 */
   const handlePlayVoice = useCallback((msgId: string) => {
+    // 场景 A：正在流式播放中 → 中止播放（不影响语音合成，继续收集 PCM 数据）
+    if (streamingAudioId === msgId) {
+      playerRef.current.mute();
+      setPlayingVoiceId(null);
+      return;
+    }
+
+    // 场景 B：已静音但仍在流式 → 从头播放已收集的 PCM 数据
+    if (assistantAudioChunksRef.current.has(msgId)) {
+      const chunks = assistantAudioChunksRef.current.get(msgId)!;
+      if (chunks.length > 0) {
+        // 释放旧的临时 WAV URL
+        if (tempWavUrlRef.current) {
+          URL.revokeObjectURL(tempWavUrlRef.current);
+          tempWavUrlRef.current = null;
+        }
+
+        const sr = assistantAudioSampleRateRef.current.get(msgId) || 24000;
+        const wavBlob = pcm16Base64ToWavBlob(chunks, sr);
+        const url = URL.createObjectURL(wavBlob);
+        tempWavUrlRef.current = url;
+
+        if (activeAudioRef.current) {
+          activeAudioRef.current.pause();
+          activeAudioRef.current = null;
+        }
+
+        const audio = new Audio(url);
+        audio.onended = () => {
+          if (playingVoiceIdRef.current === msgId) {
+            playingVoiceIdRef.current = null;
+            setPlayingVoiceId(null);
+          }
+          activeAudioRef.current = null;
+          URL.revokeObjectURL(url);
+          tempWavUrlRef.current = null;
+        };
+        audio.onerror = () => {
+          if (playingVoiceIdRef.current === msgId) {
+            playingVoiceIdRef.current = null;
+            setPlayingVoiceId(null);
+          }
+          activeAudioRef.current = null;
+          URL.revokeObjectURL(url);
+          tempWavUrlRef.current = null;
+        };
+        activeAudioRef.current = audio;
+        playingVoiceIdRef.current = msgId;
+        setPlayingVoiceId(msgId);
+        audio.play().catch(() => {
+          if (playingVoiceIdRef.current === msgId) {
+            playingVoiceIdRef.current = null;
+            setPlayingVoiceId(null);
+          }
+          activeAudioRef.current = null;
+          URL.revokeObjectURL(url);
+          tempWavUrlRef.current = null;
+        });
+        return;
+      }
+    }
+
+    // 场景 C：流式已结束 → 用 WAV URL 回放
     const url = voiceAudioUrls.current.get(msgId);
     if (!url) return;
 
@@ -368,7 +439,7 @@ export function ChatPage() {
       setPlayingVoiceId(null);
       activeAudioRef.current = null;
     });
-  }, []);
+  }, [streamingAudioId]);
 
   /** 当前有音频可播放的消息 ID 集合（user 语音 + assistant TTS） */
   const audioAvailableIds = new Set(voiceAudioUrls.current.keys());
@@ -379,6 +450,10 @@ export function ChatPage() {
     return () => {
       map.forEach((url) => URL.revokeObjectURL(url));
       map.clear();
+      if (tempWavUrlRef.current) {
+        URL.revokeObjectURL(tempWavUrlRef.current);
+        tempWavUrlRef.current = null;
+      }
     };
   }, []);
 
@@ -408,6 +483,7 @@ export function ChatPage() {
         messages={messages}
         playingVoiceId={playingVoiceId}
         audioAvailableIds={audioAvailableIds}
+        streamingAudioId={streamingAudioId}
         onPlayVoice={handlePlayVoice}
       />
       <Composer

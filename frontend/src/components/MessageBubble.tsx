@@ -2,10 +2,12 @@ import type { ChatMessage } from "../types/chat";
 
 interface Props {
   message: ChatMessage;
-  /** 是否正在播放该消息的语音 */
+  /** 是否正在播放该消息的语音（WAV 回放） */
   isPlaying: boolean;
   /** 是否有本地缓存的音频可播放 */
   hasAudio: boolean;
+  /** 是否正在流式播放（PcmPlayer 实时播放中） */
+  isStreamingPlaying?: boolean;
   /** 点击播放回调 */
   onPlayVoice: () => void;
 }
@@ -41,12 +43,16 @@ export function MessageBubble({
   message,
   isPlaying,
   hasAudio,
+  isStreamingPlaying,
   onPlayVoice,
 }: Props) {
   const isUser = message.role === "user";
   const isVoice = message.source === "voice" && isUser;
-  const isAssistantWithAudio = !isUser && hasAudio;
+  const isAssistant = message.role === "assistant";
   const dur = message.duration ?? 0;
+
+  /** 是否显示智能体语音条：有音频 或 正在流式播放 */
+  const showAssistantVoice = isAssistant && (hasAudio || isStreamingPlaying);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3 px-3`}>
@@ -59,15 +65,19 @@ export function MessageBubble({
         onClick={(isVoice && hasAudio) ? onPlayVoice : undefined}
       >
         {/* 智能体消息的语音条 — 在文字内容上方，独立可点击 */}
-        {isAssistantWithAudio && (
+        {showAssistantVoice && (
           <div
             className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[#e5e5e5] cursor-pointer active:opacity-80"
             onClick={onPlayVoice}
           >
-            <span className="text-[11px] text-[#999] select-none">
-              {isPlaying ? "⬤ 播放中" : "▶ 点击播放语音"}
+            <span className="text-[11px] text-[#999] select-none min-w-[70px]">
+              {isStreamingPlaying && "⬤ 正在播放"}
+              {!isStreamingPlaying && (isPlaying ? "⬤ 播放中" : "▶ 点击播放语音")}
             </span>
-            <VoiceWave color={isPlaying ? "#07c160" : "#bbb"} animating={isPlaying} />
+            <VoiceWave
+              color={isStreamingPlaying || isPlaying ? "#07c160" : "#bbb"}
+              animating={isStreamingPlaying || isPlaying}
+            />
           </div>
         )}
 
