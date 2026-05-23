@@ -95,7 +95,7 @@ export function Composer({
   }, []);
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 bg-[#f7f7f7] border-t border-[#ddd]">
+    <div className="shrink-0 flex items-center gap-2 px-3 py-2 bg-[#f7f7f7] border-t border-[#ddd]">
       {/* 最左侧：通话按钮 */}
       <button
         type="button"

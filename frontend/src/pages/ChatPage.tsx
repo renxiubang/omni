@@ -671,8 +671,8 @@ export function ChatPage() {
   })();
 
   return (
-    <div className="h-full flex flex-col max-w-lg mx-auto bg-[#ededed] shadow-lg">
-      <header className="h-12 flex items-center px-3 bg-[#ededed] border-b border-[#d6d6d6] relative">
+    <div className="fixed inset-0 flex flex-col max-w-lg mx-auto bg-[#ededed] shadow-lg overflow-hidden pt-safe pb-safe">
+      <header className="shrink-0 h-12 flex items-center px-3 bg-[#ededed] border-b border-[#d6d6d6] relative">
         {/* 左侧：设置按钮 */}
         <button
           type="button"

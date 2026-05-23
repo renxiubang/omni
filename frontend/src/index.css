@@ -3,11 +3,21 @@
 html, body, #root {
   height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   background: #ededed;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 安全区工具类（刘海屏 / 底部横条） */
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 @keyframes voice-bar {
