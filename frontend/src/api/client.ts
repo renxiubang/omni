@@ -138,3 +138,27 @@ export async function translateToZh(text: string): Promise<TranslateResult> {
   }
   return res.json();
 }
+
+export interface TtsRequest {
+  text: string;
+  voice?: string;
+}
+
+/**
+ * 将文本合成为语音并流式返回 PCM16 base64 音频（SSE）。
+ * 用于文本输入场景下，用户点击"播放语音"按钮后，
+ * 流式合成并播放智能体回复的语音。
+ * 不影响原有的语音输入 → 语音输出路径。
+ */
+export async function streamTts(
+  body: TtsRequest,
+  onEvent: SseHandler,
+) {
+  const res = await fetch(`${API_BASE}/api/chat/tts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  await consumeSse(res, onEvent);
+}

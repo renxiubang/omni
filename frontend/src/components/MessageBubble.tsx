@@ -18,6 +18,10 @@ interface Props {
   translationLoading?: boolean;
   /** 点击翻译按钮回调 */
   onToggleTranslation?: () => void;
+  /** 是否正在 TTS 播放（文本消息的语音播放） */
+  isTtsPlaying?: boolean;
+  /** 点击"播放语音"按钮回调（文本消息专用） */
+  onPlayTextVoice?: () => void;
 }
 
 /** 模拟语音波形条，播放时带缩放动画 */
@@ -57,6 +61,8 @@ export function MessageBubble({
   showTranslation,
   translationLoading,
   onToggleTranslation,
+  isTtsPlaying,
+  onPlayTextVoice,
 }: Props) {
   const isUser = message.role === "user";
   const isVoice = message.source === "voice" && isUser;
@@ -66,6 +72,8 @@ export function MessageBubble({
 
   /** 是否显示智能体语音条：有音频 或 正在流式播放 或 有收集中的流式数据 */
   const showAssistantVoice = isAssistant && (hasAudio || isStreamingPlaying || hasStreamingData);
+  /** 是否为文本来源的智能体消息，且可以播放 TTS 语音 */
+  const showTtsButton = isAssistant && message.source === "text" && !!message.content;
 
   // 通话记录消息：居中胶囊样式
   if (isCallRecord) {
@@ -121,6 +129,34 @@ export function MessageBubble({
                 {translationLoading ? "译中..." : "译"}
               </button>
             )}
+          </div>
+        )}
+
+        {/* 文本消息的 TTS 播放按钮 — 在文字内容上方 */}
+        {!showAssistantVoice && showTtsButton && onPlayTextVoice && (
+          <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[#e5e5e5]">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onPlayTextVoice();
+              }}
+              className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full select-none transition-colors ${
+                isTtsPlaying
+                  ? "bg-[#07c160] text-white"
+                  : "bg-[#f0f0f0] text-[#666] hover:bg-[#e5e5e5]"
+              }`}
+            >
+              {isTtsPlaying ? (
+                <>
+                  <span className="inline-block w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                  播放中
+                </>
+              ) : (
+                <>
+                  🔊 播放语音
+                </>
+              )}
+            </button>
           </div>
         )}
 

@@ -7,6 +7,7 @@ import {
   loadMessages,
   streamChat,
   streamVoice,
+  streamTts,
   translateToZh,
   type PersonaInfo,
 } from "../api/client";
@@ -52,6 +53,12 @@ export function ChatPage() {
   const [translatingId, setTranslatingId] = useState<string | null>(null);
   /** 正在加载翻译的消息 ID */
   const [translationLoadingId, setTranslationLoadingId] = useState<string | null>(null);
+  /** 正在 TTS 流式播放的消息 ID（文本消息的语音播放） */
+  const [ttsPlayingId, setTtsPlayingId] = useState<string | null>(null);
+  /** TTS 专用的 PcmPlayer 实例，与通话播放器独立 */
+  const ttsPlayerRef = useRef(new PcmPlayer());
+  /** 标记 TTS 是否正在运行，用于中止 */
+  const ttsAbortRef = useRef(false);
 
   // 从路由 state 读取通话时长，挂断后显示通话记录
   useEffect(() => {
@@ -518,6 +525,48 @@ export function ChatPage() {
     [messages, translatingId],
   );
 
+  /** 对文本消息点击"播放语音"：调用 TTS 接口流式播放 */
+  const handlePlayTextVoice = useCallback(
+    async (msgId: string, text: string) => {
+      // 如果正在播放同一条，则停止
+      if (ttsPlayingId === msgId) {
+        ttsAbortRef.current = true;
+        ttsPlayerRef.current.stop();
+        setTtsPlayingId(null);
+        return;
+      }
+      // 停止上一次
+      ttsAbortRef.current = true;
+      ttsPlayerRef.current.stop();
+      ttsPlayerRef.current = new PcmPlayer();
+      ttsPlayerRef.current.prepare();
+      ttsAbortRef.current = false;
+      setTtsPlayingId(msgId);
+
+      try {
+        await streamTts({ text }, (event, data) => {
+          if (ttsAbortRef.current) return;
+          if (event === "assistant_audio") {
+            ttsPlayerRef.current.enqueuePcm16Base64(
+              String(data.data),
+              outputSampleRateRef.current,
+            );
+          }
+          if (event === "done" || event === "error") {
+            if (event === "error") console.error("TTS error:", data.message);
+            ttsPlayerRef.current.onIdle(() => {
+              if (!ttsAbortRef.current) setTtsPlayingId(null);
+            });
+          }
+        });
+      } catch (e) {
+        console.error("TTS failed:", e);
+        setTtsPlayingId(null);
+      }
+    },
+    [ttsPlayingId],
+  );
+
   /** 当前有音频可播放的消息 ID 集合（user 语音 + assistant TTS） */
   const audioAvailableIds = new Set(voiceAudioUrls.current.keys());
   /** 有未完成的流式音频数据的消息 ID 集合（用于保持语音条可见，即使 streamingAudioId 已清除） */
@@ -568,6 +617,8 @@ export function ChatPage() {
         translatingId={translatingId}
         translationLoadingId={translationLoadingId}
         onToggleTranslation={handleToggleTranslation}
+        ttsPlayingId={ttsPlayingId}
+        onPlayTextVoice={handlePlayTextVoice}
       />
       <Composer
         disabled={busy || !sessionId}

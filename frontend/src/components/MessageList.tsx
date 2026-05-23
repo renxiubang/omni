@@ -17,6 +17,10 @@ interface Props {
   translationLoadingId: string | null;
   /** 切换翻译显示回调 */
   onToggleTranslation: (id: string) => void;
+  /** 当前正在 TTS 播放的文本消息 ID */
+  ttsPlayingId: string | null;
+  /** 点击文本消息"播放语音"回调 */
+  onPlayTextVoice: (id: string, text: string) => void;
 }
 
 export function MessageList({
@@ -29,6 +33,8 @@ export function MessageList({
   translatingId,
   translationLoadingId,
   onToggleTranslation,
+  ttsPlayingId,
+  onPlayTextVoice,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -52,6 +58,12 @@ export function MessageList({
           onToggleTranslation={
             m.role === "assistant"
               ? () => onToggleTranslation(m.id)
+              : undefined
+          }
+          isTtsPlaying={ttsPlayingId === m.id}
+          onPlayTextVoice={
+            m.role === "assistant" && m.source === "text"
+              ? () => onPlayTextVoice(m.id, m.content)
               : undefined
           }
         />
