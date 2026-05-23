@@ -3,10 +3,22 @@ export class PcmPlayer {
   private nextTime = 0;
   private sampleRate = 16000;
   private muted = false;
+  /** 播放速率，默认 1.0，范围 0.5~2.0 */
+  private rate = 1.0;
   /** 已调度但尚未播放完的 AudioBufferSourceNode 数量 */
   private playingSources = 0;
   /** 所有音频播放完毕时的回调 */
   private idleCallback: (() => void) | null = null;
+
+  /** 设置播放速率（0.5 ~ 2.0） */
+  setPlaybackRate(rate: number) {
+    this.rate = Math.max(0.5, Math.min(2.0, rate));
+  }
+
+  /** 获取当前播放速率 */
+  getPlaybackRate(): number {
+    return this.rate;
+  }
 
   /** 在用户手势上下文中调用，提前创建并激活 AudioContext。
    *  必须在 handleSse 之前调用，否则浏览器会因 autoplay policy 阻止发声。 */
@@ -60,6 +72,7 @@ export class PcmPlayer {
     buffer.copyToChannel(floats, 0);
     const source = ctx.createBufferSource();
     source.buffer = buffer;
+    source.playbackRate.value = this.rate;
     source.connect(ctx.destination);
     this.playingSources++;
     source.onended = () => {
@@ -68,7 +81,7 @@ export class PcmPlayer {
     };
     const start = Math.max(this.nextTime, ctx.currentTime);
     source.start(start);
-    this.nextTime = start + buffer.duration;
+    this.nextTime = start + buffer.duration / this.rate;
   }
 
   /** 注册空闲回调：所有已调度音频播放完毕后触发 */

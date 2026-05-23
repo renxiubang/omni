@@ -15,11 +15,24 @@ import { Composer } from "../components/Composer";
 import { MessageList } from "../components/MessageList";
 import { PcmPlayer } from "../audio/pcmPlayer";
 import { pcm16Base64ToWavBlob } from "../audio/pcmToWav";
+import { SettingsDrawer } from "./SettingsPage";
 import type { ChatMessage } from "../types/chat";
 
 export function ChatPage() {
   const navigate = useNavigate();
   const location = useLocation();
+
+  /** 从 localStorage 读取保存的语速，默认 1.0 */
+  const getSavedRate = (): number => {
+    try {
+      const v = localStorage.getItem("omni_speech_rate");
+      if (v) {
+        const n = parseFloat(v);
+        if (n >= 0.5 && n <= 2.0) return n;
+      }
+    } catch {}
+    return 1.0;
+  };
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
@@ -53,6 +66,7 @@ export function ChatPage() {
   const [translatingId, setTranslatingId] = useState<string | null>(null);
   /** 正在加载翻译的消息 ID */
   const [translationLoadingId, setTranslationLoadingId] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
   /** 正在 TTS 流式播放的消息 ID（文本消息的语音播放） */
   const [ttsPlayingId, setTtsPlayingId] = useState<string | null>(null);
   /** TTS 专用的 PcmPlayer 实例，与通话播放器独立 */
@@ -279,6 +293,8 @@ export function ChatPage() {
       playerRef.current = new PcmPlayer();
       // 在用户手势中提前激活 AudioContext，避免 SSE 回调中懒创建被浏览器拦截
       playerRef.current.prepare();
+      // 应用保存的语速
+      playerRef.current.setPlaybackRate(getSavedRate());
       try {
         await fn();
       } catch (e) {
@@ -424,6 +440,7 @@ export function ChatPage() {
         }
 
         const audio = new Audio(url);
+        audio.playbackRate = getSavedRate();
         audio.onended = () => {
           if (playingVoiceIdRef.current === msgId) {
             playingVoiceIdRef.current = null;
@@ -479,6 +496,7 @@ export function ChatPage() {
     }
 
     const audio = new Audio(url);
+    audio.playbackRate = getSavedRate();
     audio.onended = () => {
       playingVoiceIdRef.current = null;
       setPlayingVoiceId(null);
@@ -549,6 +567,7 @@ export function ChatPage() {
       ttsPlayerRef.current.stop();
       ttsPlayerRef.current = new PcmPlayer();
       ttsPlayerRef.current.prepare();
+      ttsPlayerRef.current.setPlaybackRate(getSavedRate());
       ttsAbortRef.current = false;
       setTtsPlayingId(msgId);
 
@@ -594,13 +613,47 @@ export function ChatPage() {
     };
   }, []);
 
+  // 查找当前 persona 名称
+  const currentPersonaName = (() => {
+    if (!selectedPersona) return "默认";
+    const p = personas.find((x) => x.key === selectedPersona);
+    return p ? p.name : "默认";
+  })();
+
   return (
     <div className="h-full flex flex-col max-w-lg mx-auto bg-[#ededed] shadow-lg">
-      <header className="h-12 flex items-center justify-between px-3 bg-[#ededed] border-b border-[#d6d6d6]">
-        <span className="font-medium text-[17px]">英语对话练习</span>
+      <header className="h-12 flex items-center px-3 bg-[#ededed] border-b border-[#d6d6d6] relative">
+        {/* 左侧：设置按钮 */}
+        <button
+          type="button"
+          className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-[#d6d6d6] transition-colors"
+          onClick={() => setShowSettings(true)}
+          aria-label="设置"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#333"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+
+        {/* 中间：智能体名称 */}
+        <span className="absolute left-1/2 -translate-x-1/2 font-medium text-[17px] text-[#111]">
+          {currentPersonaName}
+        </span>
+
+        {/* 右侧：persona 下拉框 */}
         {personas.length > 0 && (
           <select
-            className="text-xs bg-white border border-[#d6d6d6] rounded px-2 py-1 max-w-[130px] truncate"
+            className="ml-auto text-xs bg-white border border-[#d6d6d6] rounded px-2 py-1 max-w-[130px] truncate"
             value={selectedPersona}
             onChange={(e) => {
               void handleChangePersona(e.target.value);
@@ -637,6 +690,7 @@ export function ChatPage() {
         onVoiceStop={onVoiceStop}
         onCall={() => sessionId && navigate(`/call/${sessionId}`)}
       />
+      <SettingsDrawer visible={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   );
 }
