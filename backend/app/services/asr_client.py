@@ -2,6 +2,7 @@ import asyncio
 import logging
 import subprocess
 import tempfile
+import wave
 from pathlib import Path
 
 import dashscope
@@ -17,22 +18,20 @@ class AsrClient:
         return await asyncio.to_thread(self._transcribe_sync, audio_bytes, format_hint)
 
     def _convert_for_asr(self, input_path: str, input_format: str) -> tuple[str, str]:
-        """将浏览器录音转换为阿里云 ASR 支持的格式（16kHz mono WAV）。
-        浏览器 MediaRecorder 默认录制 webm/opus，采样率 ~48kHz，
-        与 paraformer-v2 要求的 16kHz WAV/PCM 不兼容，需用 ffmpeg 转换。
-        """
-        if input_format in ("wav", "pcm"):
-            return input_path, input_format
+        """将浏览器录音转换为阿里云 ASR 支持的格式（16kHz mono WAV/PCM）。
 
+        官方要求：wav 必须是 PCM 编码。
+        浏览器 MediaRecorder 录制的 WAV 可能编码不规范，必须强制转换。
+        """
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             output_path = tmp.name
 
         cmd = [
             "ffmpeg", "-y",
             "-i", input_path,
+            "-acodec", "pcm_s16le",        # 强制 PCM 16bit 小端编码
             "-ar", str(settings.asr_sample_rate),
             "-ac", "1",
-            "-sample_fmt", "s16",
             output_path,
         ]
         try:
@@ -46,7 +45,7 @@ class AsrClient:
             )
         except subprocess.CalledProcessError as e:
             Path(output_path).unlink(missing_ok=True)
-            err = e.stderr.decode(errors="replace")[:200] if e.stderr else "unknown error"
+            err = e.stderr.decode(errors="replace")[:500] if e.stderr else "unknown error"
             raise RuntimeError(f"音频转换失败: {err}")
 
     def _transcribe_sync(self, audio_bytes: bytes, format_hint: str) -> str:
@@ -56,10 +55,25 @@ class AsrClient:
             tmp.write(audio_bytes)
             tmp_path = tmp.name
 
-        # 将浏览器录音转换为 16kHz mono WAV
+        # 将浏览器录音转换为 16kHz mono WAV/PCM（强制转换）
         asr_path = tmp_path
         try:
             asr_path, asr_format = self._convert_for_asr(tmp_path, format_hint)
+
+            # 打印转换后的音频参数，方便排查问题
+            if asr_format == "wav":
+                try:
+                    with wave.open(asr_path, "rb") as wf:
+                        duration = wf.getnframes() / wf.getframerate()
+                        logger.info(
+                            f"ASR audio info: channels={wf.getnchannels()}, "
+                            f"sampwidth={wf.getsampwidth()}bytes, "
+                            f"framerate={wf.getframerate()}Hz, "
+                            f"nframes={wf.getnframes()}, "
+                            f"duration={duration:.2f}s"
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to read WAV info: {e}")
         except RuntimeError as e:
             Path(tmp_path).unlink(missing_ok=True)
             raise e
