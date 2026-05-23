@@ -45,6 +45,7 @@ export function MessageBubble({
 }: Props) {
   const isUser = message.role === "user";
   const isVoice = message.source === "voice" && isUser;
+  const isAssistantWithAudio = !isUser && hasAudio;
   const dur = message.duration ?? 0;
 
   return (
@@ -55,8 +56,20 @@ export function MessageBubble({
             ? "bg-[#95ec69] text-[#111]"
             : "bg-white text-[#111] border border-[#e5e5e5]"
         } ${isVoice && hasAudio ? "cursor-pointer active:opacity-80" : ""}`}
-        onClick={isVoice && hasAudio ? onPlayVoice : undefined}
       >
+        {/* 智能体消息的语音条 — 在文字内容上方，独立可点击 */}
+        {isAssistantWithAudio && (
+          <div
+            className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[#e5e5e5] cursor-pointer active:opacity-80"
+            onClick={onPlayVoice}
+          >
+            <span className="text-[11px] text-[#999] select-none">
+              {isPlaying ? "⬤ 播放中" : "▶ 点击播放语音"}
+            </span>
+            <VoiceWave color={isPlaying ? "#07c160" : "#bbb"} animating={isPlaying} />
+          </div>
+        )}
+
         {isVoice ? (
           <div className="flex items-center gap-2 min-w-[80px]">
             <span className="text-xs text-[#666] tabular-nums min-w-[28px] text-right">

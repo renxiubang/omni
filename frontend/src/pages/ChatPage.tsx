@@ -9,6 +9,7 @@ import {
 import { Composer } from "../components/Composer";
 import { MessageList } from "../components/MessageList";
 import { PcmPlayer } from "../audio/pcmPlayer";
+import { pcm16Base64ToWavBlob } from "../audio/pcmToWav";
 import type { ChatMessage } from "../types/chat";
 
 export function ChatPage() {
@@ -29,6 +30,9 @@ export function ChatPage() {
   const voiceAudioUrls = useRef<Map<string, string>>(new Map());
   const playingVoiceIdRef = useRef<string | null>(null);
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+  /** 收集 assistant 的 PCM base64 音频数据，done 时转为 WAV 存入 voiceAudioUrls */
+  const assistantAudioChunksRef = useRef<Map<string, string[]>>(new Map());
+  const assistantAudioSampleRateRef = useRef<Map<string, number>>(new Map());
 
   const handleSse = useCallback(
     (event: string, data: Record<string, unknown>) => {
@@ -87,16 +91,37 @@ export function ChatPage() {
       if (event === "assistant_audio") {
         const sampleRate = Number(data.sample_rate) || 24000;
         playerRef.current.enqueuePcm16Base64(String(data.data), sampleRate);
+        // 收集音频数据供回放
+        const asstId = assistantIdRef.current;
+        if (asstId) {
+          const arr = assistantAudioChunksRef.current.get(asstId) || [];
+          arr.push(String(data.data));
+          assistantAudioChunksRef.current.set(asstId, arr);
+          assistantAudioSampleRateRef.current.set(asstId, sampleRate);
+        }
       }
       if (event === "done") {
+        const asstId = assistantIdRef.current;
+        assistantIdRef.current = null;
         setMessages((prev) => {
           const target = prev.find((m) => m.role === "assistant" && m.streaming);
           if (!target) return prev;
-          assistantIdRef.current = null;
           return prev.map((m) =>
             m.id === target.id ? { ...m, streaming: false } : m,
           );
         });
+        // 将收集的 PCM 音频转为 WAV Blob，供点击回放
+        if (asstId) {
+          const chunks = assistantAudioChunksRef.current.get(asstId);
+          if (chunks && chunks.length > 0) {
+            const sr =
+              assistantAudioSampleRateRef.current.get(asstId) || 24000;
+            const wavBlob = pcm16Base64ToWavBlob(chunks, sr);
+            voiceAudioUrls.current.set(asstId, URL.createObjectURL(wavBlob));
+          }
+          assistantAudioChunksRef.current.delete(asstId);
+          assistantAudioSampleRateRef.current.delete(asstId);
+        }
       }
       if (event === "error") {
         setMessages((prev) => {
@@ -302,8 +327,17 @@ export function ChatPage() {
     });
   }, []);
 
-  /** 当前有音频可播放的消息 ID 集合 */
+  /** 当前有音频可播放的消息 ID 集合（user 语音 + assistant TTS） */
   const audioAvailableIds = new Set(voiceAudioUrls.current.keys());
+
+  // 组件卸载时释放所有 object URL
+  useEffect(() => {
+    const map = voiceAudioUrls.current;
+    return () => {
+      map.forEach((url) => URL.revokeObjectURL(url));
+      map.clear();
+    };
+  }, []);
 
   return (
     <div className="h-full flex flex-col max-w-lg mx-auto bg-[#ededed] shadow-lg">
