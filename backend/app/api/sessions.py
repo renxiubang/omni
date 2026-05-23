@@ -30,6 +30,7 @@ def list_messages(session_id: str) -> list[MessageOut]:
             audio_ref=m.audio_b64[:32] + "..." if m.audio_b64 else None,
         )
         for m in session.messages
+        if m.role != "system"
     ]
 
 

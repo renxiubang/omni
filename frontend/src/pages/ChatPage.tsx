@@ -347,6 +347,8 @@ export function ChatPage() {
     }
   };
 
+  const MIN_VOICE_DURATION_SEC = 1; // 最短录音时长（秒）
+
   const onVoiceStop = () => {
     setIsRecording(false);
     const rec = mediaRef.current;
@@ -359,6 +361,13 @@ export function ChatPage() {
 
     const sid = sessionId;
     const duration = Math.round((Date.now() - recordingStartRef.current) / 1000);
+
+    // 录音过短，直接丢弃
+    if (duration < MIN_VOICE_DURATION_SEC) {
+      rec.stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+
     const pendingId = `user-pending-${Date.now()}`;
     pendingUserIdRef.current = pendingId;
     setMessages((prev) => [
