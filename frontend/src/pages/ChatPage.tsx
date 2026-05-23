@@ -72,6 +72,8 @@ export function ChatPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [showCallOptions, setShowCallOptions] = useState(false);
+  /** 语音转文字结果：非空时将填入输入框 */
+  const [voiceTextResult, setVoiceTextResult] = useState<string | null>(null);
   /** 正在 TTS 流式播放的消息 ID（文本消息的语音播放） */
   const [ttsPlayingId, setTtsPlayingId] = useState<string | null>(null);
   /** TTS 专用的 PcmPlayer 实例，与通话播放器独立 */
@@ -421,18 +423,18 @@ export function ChatPage() {
     }
 
     if (action === "text") {
-      // 转文字：录音后识别为文字发送
+      // 转文字：录音后识别为文字，填入输入框
       rec.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
         const ext = rec.mimeType?.includes("webm") ? "recording.webm" : "recording.wav";
         rec.stream.getTracks().forEach((t) => t.stop());
         try {
           const result = await sttTranscribe(blob, ext);
-          if (result && sid) {
-            onSendText(result);
+          if (result) {
+            setVoiceTextResult(result);
           }
         } catch {
-          // STT 失败，静默处理
+          setToastMsg("语音识别失败，请重试");
         }
       };
       rec.stop();
@@ -764,6 +766,9 @@ export function ChatPage() {
         onVoiceStart={onVoiceStart}
         onVoiceStop={handleVoiceStop}
         onCall={handleCallButton}
+        onSttError={(msg) => setToastMsg(msg)}
+        voiceTextResult={voiceTextResult}
+        onVoiceTextConsumed={() => setVoiceTextResult(null)}
       />
       <SettingsDrawer visible={showSettings} onClose={() => setShowSettings(false)} />
       {toastMsg && (

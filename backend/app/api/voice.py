@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -8,6 +9,8 @@ from app.services.asr_client import asr_client
 from app.services.omni_client import omni_client
 from app.services.session_store import session_store
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["voice"])
 
@@ -36,10 +39,13 @@ async def speech_to_text(
         raise HTTPException(status_code=400, detail="Empty audio")
 
     fmt = _guess_format(audio.filename, audio.content_type)
+    logger.info(f"STT request: filename={audio.filename}, format={fmt}, size={len(audio_bytes)} bytes")
     try:
         text = await asr_client.transcribe(audio_bytes, format_hint=fmt)
+        logger.info(f"STT result: {repr(text)}")
         return {"text": text}
     except Exception as e:
+        logger.error(f"STT failed: {e}")
         raise HTTPException(status_code=500, detail=f"STT failed: {str(e)}")
 
 

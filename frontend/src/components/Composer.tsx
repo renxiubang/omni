@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { VoiceHoldButton } from "./VoiceHoldButton";
 import { sttTranscribe } from "../api/client";
 
@@ -11,6 +11,11 @@ interface Props {
   onVoiceStart: () => void;
   onVoiceStop: (action: "send" | "cancel" | "text") => void;
   onCall: () => void;
+  onSttError?: (msg: string) => void;
+  /** 外部传入的语音转文字结果，填入输入框 */
+  voiceTextResult?: string | null;
+  /** voiceTextResult 被消费后的回调 */
+  onVoiceTextConsumed?: () => void;
 }
 
 export function Composer({
@@ -20,6 +25,9 @@ export function Composer({
   onVoiceStart,
   onVoiceStop,
   onCall,
+  onSttError,
+  voiceTextResult,
+  onVoiceTextConsumed,
 }: Props) {
   const [mode, setMode] = useState<InputMode>("text");
   const [text, setText] = useState("");
@@ -30,6 +38,15 @@ export function Composer({
   const sttRecorderRef = useRef<MediaRecorder | null>(null);
   const sttChunksRef = useRef<Blob[]>([]);
   const sttPressedRef = useRef(false);
+
+  /** 外部语音转文字结果：填入输入框并切换到文字模式 */
+  useEffect(() => {
+    if (voiceTextResult) {
+      setText(voiceTextResult);
+      setMode("text");
+      onVoiceTextConsumed?.();
+    }
+  }, [voiceTextResult]);
 
   const submit = () => {
     const t = text.trim();
@@ -85,8 +102,9 @@ export function Composer({
         if (result) {
           setText((prev) => (prev ? prev + result : result));
         }
-      } catch {
-        // STT 失败，静默处理
+      } catch (e) {
+        // STT 失败，通知上层
+        onSttError?.("语音识别失败，请重试");
       } finally {
         setSttLoading(false);
       }

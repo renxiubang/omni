@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     omni_model: str = "qwen3.5-omni-flash"
     omni_voice: str = "Tina"
     omni_audio_format: str = "pcm16"
-    asr_model: str = "paraformer-v2"   # 阿里 ASR 模型：paraformer-v2 / paraformer-realtime-v2 / paraformer-mtl-v1
+    asr_model: str = "paraformer-realtime-v2"   # 阿里 ASR 模型：paraformer-v2 / paraformer-realtime-v2 / paraformer-mtl-v1
     asr_sample_rate: int = 16000          # ASR 识别采样率（Hz）
     cors_origins: str = "http://localhost:5173"
     max_audio_history_turns: int = 3
