@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { VoiceHoldButton } from "./VoiceHoldButton";
-import { sttTranscribe } from "../api/client";
+import { sttStreamWsUrl } from "../api/client";
 
 type InputMode = "text" | "voice";
 
@@ -31,12 +31,13 @@ export function Composer({
 }: Props) {
   const [mode, setMode] = useState<InputMode>("text");
   const [text, setText] = useState("");
-  /** 语音转文字状态：idle | recording | loading */
-  const [sttState, setSttState] = useState<"idle" | "recording" | "loading">("idle");
+  /** 流式语音转文字状态：idle | listening | loading */
+  const [sttState, setSttState] = useState<"idle" | "listening" | "loading">("idle");
+  /** 录音开始前文本框中的文字（松开后不清除） */
+  const sttBaseTextRef = useRef("");
   const sttRecorderRef = useRef<MediaRecorder | null>(null);
-  const sttChunksRef = useRef<Blob[]>([]);
-  const sttPressedRef = useRef(false);
-  const sttStartTimeRef = useRef(0);
+  const sttWsRef = useRef<WebSocket | null>(null);
+  const sttAbortRef = useRef(false);
 
   /** 最小录音时长（毫秒），小于此值提示用户 */
   const MIN_STT_DURATION_MS = 500;
@@ -61,105 +62,120 @@ export function Composer({
     setMode((prev) => (prev === "text" ? "voice" : "text"));
   };
 
-  /* ---- 语音转文字（输入框内 🎤 图标） ---- */
-  const startStt = useCallback(async () => {
+  /* ---- 流式语音转文字（输入框内 🎤 图标，点击切换） ---- */
+
+  /** 开始流式监听 */
+  const startListening = useCallback(async () => {
     if (disabled || sttState !== "idle") return;
-    sttPressedRef.current = true;
-    setSttState("recording");
-    sttChunksRef.current = [];
-    sttStartTimeRef.current = Date.now();
+
+    sttAbortRef.current = false;
+    setSttState("listening");
+    sttBaseTextRef.current = text; // 记住已输入的文字
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (!sttPressedRef.current) {
+
+      if (sttAbortRef.current) {
         stream.getTracks().forEach((t) => t.stop());
         setSttState("idle");
         return;
       }
 
+      // 创建 MediaRecorder
       const rec = new MediaRecorder(stream);
-      rec.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          sttChunksRef.current.push(e.data);
+      sttRecorderRef.current = rec;
+
+      // 创建 WebSocket 连接
+      const wsUrl = sttStreamWsUrl();
+      const ws = new WebSocket(wsUrl);
+      sttWsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log("[STT-stream] WebSocket connected");
+        rec.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+            ws.send(e.data);
+          }
+        };
+        rec.start(100); // 每 100ms 发送一次数据
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "partial" && msg.text) {
+            const base = sttBaseTextRef.current;
+            setText(base ? base + msg.text : msg.text);
+          } else if (msg.type === "final" && msg.text) {
+            const base = sttBaseTextRef.current;
+            setText(base ? base + msg.text : msg.text);
+          } else if (msg.type === "error") {
+            console.error("[STT-stream] Server error:", msg.message);
+            onSttError?.(msg.message || "识别失败");
+          }
+        } catch {
+          // 非 JSON 消息，忽略
         }
       };
-      rec.onerror = () => {
-        console.error("[STT] MediaRecorder error");
-        rec.stream.getTracks().forEach((t) => t.stop());
-        setSttState("idle");
-        onSttError?.("录音失败，请重试");
+
+      ws.onerror = (e) => {
+        console.error("[STT-stream] WebSocket error:", e);
+        onSttError?.("连接失败，请重试");
       };
-      sttRecorderRef.current = rec;
-      rec.start(100); // 每 100ms 捕获一次数据，确保短录音也能获取音频
+
+      ws.onclose = () => {
+        console.log("[STT-stream] WebSocket closed");
+      };
+
     } catch (err) {
-      console.error("[STT] Failed to start:", err);
+      console.error("[STT-stream] Failed to start:", err);
       setSttState("idle");
       onSttError?.("无法访问麦克风，请检查权限");
     }
-  }, [disabled, sttState, onSttError]);
+  }, [disabled, sttState, text, onSttError]);
 
-  const stopStt = useCallback(() => {
-    sttPressedRef.current = false;
+  /** 停止流式监听 */
+  const stopListening = useCallback(() => {
+    sttAbortRef.current = true;
+
     const rec = sttRecorderRef.current;
+    const ws = sttWsRef.current;
+
     sttRecorderRef.current = null;
+    sttWsRef.current = null;
 
-    if (!rec) {
-      setSttState("idle");
-      return;
-    }
-
-    // 检查录音时长
-    const duration = Date.now() - sttStartTimeRef.current;
-    if (duration < MIN_STT_DURATION_MS) {
+    // 停止 MediaRecorder
+    if (rec && rec.state !== "inactive") {
+      // 先移除 ondataavailable，避免继续发数据
+      rec.ondataavailable = null;
+      rec.onstop = () => {
+        rec.stream.getTracks().forEach((t) => t.stop());
+      };
       rec.stop();
-      rec.stream.getTracks().forEach((t) => t.stop());
-      setSttState("idle");
-      onSttError?.("录音时间太短，请长按说话");
-      return;
     }
 
-    setSttState("loading");
-
-    rec.onstop = async () => {
-      rec.stream.getTracks().forEach((t) => t.stop());
-
-      const chunks = sttChunksRef.current;
-      if (chunks.length === 0) {
-        console.warn("[STT] No audio chunks captured");
-        setSttState("idle");
-        onSttError?.("未检测到音频，请重试");
-        return;
-      }
-
-      const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
-      console.log("[STT] Blob size:", blob.size, "type:", blob.type);
-
-      if (blob.size < 2000) {
-        console.warn("[STT] Audio too short, size:", blob.size);
-        setSttState("idle");
-        onSttError?.("录音时间太短，请长按说话");
-        return;
-      }
-
-      const ext = rec.mimeType?.includes("webm") ? "recording.webm" : "recording.wav";
-
-      try {
-        const result = await sttTranscribe(blob, ext);
-        if (result && result.trim()) {
-          setText((prev) => (prev ? prev + result : result));
-        } else {
-          onSttError?.("未能识别语音，请重试");
+    // 发送 stop 消息并关闭 WebSocket
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "stop" }));
+      // 给后端一些时间做最终 ASR，然后关闭
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
         }
-      } catch (e) {
-        console.error("[STT] Transcription failed:", e);
-        onSttError?.("语音识别失败，请重试");
-      } finally {
-        setSttState("idle");
-      }
-    };
+      }, 2000);
+    }
 
-    rec.stop();
-  }, [onSttError]);
+    setSttState("idle");
+  }, []);
+
+  /** 点击切换监听状态 */
+  const toggleStt = useCallback(() => {
+    if (sttState === "listening" || sttState === "loading") {
+      stopListening();
+    } else {
+      startListening();
+    }
+  }, [sttState, startListening, stopListening]);
 
   return (
     <div className="shrink-0 flex items-center gap-2 px-3 py-2 bg-[#f7f7f7] border-t border-[#ddd]">
@@ -206,12 +222,12 @@ export function Composer({
             <input
               className="w-full h-9 rounded-md border border-[#ddd] px-3 pr-9 text-[15px] bg-white outline-none focus:border-[#07c160] disabled:bg-[#f5f5f5]"
               placeholder={
-                sttState === "recording" ? "正在聆听..." :
+                sttState === "listening" ? "正在聆听..." :
                 sttState === "loading" ? "识别中..." :
                 "输入消息..."
               }
               value={text}
-              disabled={disabled || sttState !== "idle"}
+              disabled={disabled || sttState === "listening"}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -224,26 +240,19 @@ export function Composer({
             <button
               type="button"
               className={`absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
-                sttState === "recording"
+                sttState === "listening"
                   ? "bg-[#07c160]"
                   : "hover:bg-[#f0f0f0]"
               }`}
-              onPointerDown={(e) => {
+              onClick={(e) => {
                 e.preventDefault();
-                startStt();
-              }}
-              onPointerUp={(e) => {
-                e.preventDefault();
-                stopStt();
-              }}
-              onPointerLeave={(e) => {
-                if (e.buttons) stopStt();
+                toggleStt();
               }}
               onContextMenu={(e) => e.preventDefault()}
-              title="语音转文字（按住说话）"
+              title={sttState === "listening" ? "停止监听" : "语音转文字（点击开始）"}
               disabled={disabled || sttState === "loading"}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={sttState === "recording" ? "white" : "#999"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={sttState === "listening" ? "white" : "#999"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                 <line x1="12" y1="19" x2="12" y2="23"/>
@@ -256,7 +265,7 @@ export function Composer({
           <button
             type="button"
             className="h-9 px-4 rounded-md bg-[#07c160] text-white text-[15px] disabled:opacity-40 transition-colors"
-            disabled={disabled || !text.trim() || sttState !== "idle"}
+            disabled={disabled || !text.trim() || sttState === "listening"}
             onClick={submit}
           >
             发送

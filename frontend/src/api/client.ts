@@ -116,6 +116,16 @@ export function callWsUrl(sessionId: string) {
   return `${proto}//${host}/api/call?session_id=${encodeURIComponent(sessionId)}`;
 }
 
+/**
+ * 流式语音转文字 WebSocket URL
+ */
+export function sttStreamWsUrl() {
+  const loc = window.location;
+  const proto = loc.protocol === "https:" ? "wss:" : "ws:";
+  const host = API_BASE ? new URL(API_BASE).host : loc.host;
+  return `${proto}//${host}/api/chat/stt-stream`;
+}
+
 export interface TranslateResult {
   text: string;
   translation: string;
