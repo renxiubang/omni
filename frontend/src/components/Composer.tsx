@@ -3,6 +3,7 @@ import { VoiceHoldButton } from "./VoiceHoldButton";
 
 interface Props {
   disabled?: boolean;
+  isRecording: boolean;
   onSendText: (text: string) => void;
   onVoiceStart: () => void;
   onVoiceStop: () => void;
@@ -11,6 +12,7 @@ interface Props {
 
 export function Composer({
   disabled,
+  isRecording,
   onSendText,
   onVoiceStart,
   onVoiceStop,
@@ -29,6 +31,7 @@ export function Composer({
     <div className="flex items-center gap-2 px-3 py-2 bg-[#f7f7f7] border-t border-[#ddd]">
       <VoiceHoldButton
         disabled={disabled}
+        isRecording={isRecording}
         onStart={onVoiceStart}
         onStop={onVoiceStop}
       />

@@ -1,9 +1,9 @@
+import base64
 import json
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.services.asr_client import asr_client
 from app.services.omni_client import omni_client
 from app.services.session_store import session_store
 
@@ -40,16 +40,11 @@ async def chat_voice(
     fmt = _guess_format(audio.filename, audio.content_type)
 
     async def generate():
-        try:
-            display_text = await asr_client.transcribe(audio_bytes, fmt)
-        except Exception as e:
-            display_text = ""
-            yield _sse("asr_error", {"message": str(e)})
-
+        # 直接将音频存入 session，不调用 ASR
         user_msg = session_store.add_message(
             session_id,
             role="user",
-            content=display_text or "[语音识别失败]",
+            content="",  # 语音输入无文字，由 Omni 多模态直接理解
             source="voice",
             audio_bytes=audio_bytes,
             audio_format=fmt if fmt in ("wav", "mp3", "webm") else "wav",
@@ -58,7 +53,7 @@ async def chat_voice(
             "user_message",
             {
                 "id": user_msg.id,
-                "content": user_msg.content,
+                "content": "[语音]",
                 "role": "user",
                 "source": "voice",
             },
@@ -66,12 +61,17 @@ async def chat_voice(
 
         session = session_store.get(session_id)
         assert session
+        # build_messages 会自动将带 audio_b64 的用户消息编码为 input_audio 格式
         messages = omni_client.build_messages(session.messages)
         full: list[str] = []
         try:
-            async for token in omni_client.stream_text(messages):
-                full.append(token)
-                yield _sse("token", {"delta": token})
+            # 使用 stream_call 同时获取文字和音频输出
+            async for text_delta, audio_b64 in omni_client.stream_call(messages):
+                if text_delta:
+                    full.append(text_delta)
+                    yield _sse("token", {"delta": text_delta})
+                if audio_b64:
+                    yield _sse("assistant_audio", {"data": audio_b64, "sample_rate": 24000})
             assistant = session_store.add_message(
                 session_id,
                 role="assistant",

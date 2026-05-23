@@ -5,7 +5,6 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.services.asr_client import asr_client
 from app.services.omni_client import omni_client
 from app.services.session_store import session_store
 
@@ -42,22 +41,18 @@ async def call_ws(ws: WebSocket, session_id: str) -> None:
         await cancel_current()
 
         async def run() -> None:
-            try:
-                display_text = await asr_client.transcribe(pcm_bytes, "wav")
-            except Exception as e:
-                display_text = ""
-                await _send(ws, {"type": "asr_error", "message": str(e)})
-
-            await _send(ws, {"type": "user_final", "text": display_text or "[未识别]"})
-
+            # 直接将音频存入 session，不调用 ASR
+            # build_messages() 会自动将带 audio_b64 的用户消息编码为 input_audio 格式
             session_store.add_message(
                 session_id,
                 role="user",
-                content=display_text or "[语音]",
+                content="",  # 语音输入无文字，由 Omni 多模态直接理解
                 source="call",
                 audio_bytes=pcm_bytes,
                 audio_format="wav",
             )
+
+            await _send(ws, {"type": "user_final", "text": "[语音]"})
 
             sess = session_store.get(session_id)
             if not sess:
