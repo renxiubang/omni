@@ -79,6 +79,28 @@ export function ChatPage() {
   /** 标记 TTS 是否正在运行，用于中止 */
   const ttsAbortRef = useRef(false);
 
+  /** iOS Safari 键盘修复：动态跟踪 visualViewport，保持固定定位元素始终可见 */
+  const [vvTop, setVvTop] = useState(0);
+  const [vvHeight, setVvHeight] = useState(window.innerHeight);
+
+  useEffect(() => {
+    const sync = () => {
+      const vv = window.visualViewport;
+      if (vv) {
+        setVvTop(vv.offsetTop);
+        setVvHeight(vv.height);
+      }
+    };
+    sync();
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", sync);
+    vv?.addEventListener("scroll", sync);
+    return () => {
+      vv?.removeEventListener("resize", sync);
+      vv?.removeEventListener("scroll", sync);
+    };
+  }, []);
+
   // 从路由 state 读取通话时长，挂断后显示通话记录
   useEffect(() => {
     const state = location.state as { callDuration?: number } | null;
@@ -671,7 +693,10 @@ export function ChatPage() {
   })();
 
   return (
-    <div className="fixed inset-0 flex flex-col max-w-lg mx-auto bg-[#ededed] shadow-lg overflow-hidden pt-safe pb-safe">
+    <div
+      className="fixed left-0 right-0 flex flex-col max-w-lg mx-auto bg-[#ededed] shadow-lg overflow-hidden pt-safe pb-safe"
+      style={{ top: `${vvTop}px`, height: `${vvHeight}px` }}
+    >
       <header className="shrink-0 h-12 flex items-center px-3 bg-[#ededed] border-b border-[#d6d6d6] relative">
         {/* 左侧：设置按钮 */}
         <button
