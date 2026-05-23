@@ -31,13 +31,15 @@ export function Composer({
 }: Props) {
   const [mode, setMode] = useState<InputMode>("text");
   const [text, setText] = useState("");
-  /** 语音转文字：是否正在录音 */
-  const [sttRecording, setSttRecording] = useState(false);
-  /** 语音转文字：是否正在请求 STT */
-  const [sttLoading, setSttLoading] = useState(false);
+  /** 语音转文字状态：idle | recording | loading */
+  const [sttState, setSttState] = useState<"idle" | "recording" | "loading">("idle");
   const sttRecorderRef = useRef<MediaRecorder | null>(null);
   const sttChunksRef = useRef<Blob[]>([]);
   const sttPressedRef = useRef(false);
+  const sttStartTimeRef = useRef(0);
+
+  /** 最小录音时长（毫秒），小于此值提示用户 */
+  const MIN_STT_DURATION_MS = 500;
 
   /** 外部语音转文字结果：填入输入框并切换到文字模式 */
   useEffect(() => {
@@ -61,56 +63,103 @@ export function Composer({
 
   /* ---- 语音转文字（输入框内 🎤 图标） ---- */
   const startStt = useCallback(async () => {
-    if (disabled) return;
+    if (disabled || sttState !== "idle") return;
     sttPressedRef.current = true;
+    setSttState("recording");
+    sttChunksRef.current = [];
+    sttStartTimeRef.current = Date.now();
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (!sttPressedRef.current) {
         stream.getTracks().forEach((t) => t.stop());
+        setSttState("idle");
         return;
       }
+
       const rec = new MediaRecorder(stream);
-      sttChunksRef.current = [];
       rec.ondataavailable = (e) => {
-        if (e.data.size) sttChunksRef.current.push(e.data);
+        if (e.data && e.data.size > 0) {
+          sttChunksRef.current.push(e.data);
+        }
+      };
+      rec.onerror = () => {
+        console.error("[STT] MediaRecorder error");
+        rec.stream.getTracks().forEach((t) => t.stop());
+        setSttState("idle");
+        onSttError?.("录音失败，请重试");
       };
       sttRecorderRef.current = rec;
-      rec.start();
-      setSttRecording(true);
-    } catch {
-      // 麦克风不可用，静默失败
+      rec.start(100); // 每 100ms 捕获一次数据，确保短录音也能获取音频
+    } catch (err) {
+      console.error("[STT] Failed to start:", err);
+      setSttState("idle");
+      onSttError?.("无法访问麦克风，请检查权限");
     }
-  }, [disabled]);
+  }, [disabled, sttState, onSttError]);
 
   const stopStt = useCallback(() => {
     sttPressedRef.current = false;
     const rec = sttRecorderRef.current;
     sttRecorderRef.current = null;
-    if (!rec || rec.state === "inactive") {
-      setSttRecording(false);
+
+    if (!rec) {
+      setSttState("idle");
       return;
     }
-    setSttRecording(false);
-    setSttLoading(true);
+
+    // 检查录音时长
+    const duration = Date.now() - sttStartTimeRef.current;
+    if (duration < MIN_STT_DURATION_MS) {
+      rec.stop();
+      rec.stream.getTracks().forEach((t) => t.stop());
+      setSttState("idle");
+      onSttError?.("录音时间太短，请长按说话");
+      return;
+    }
+
+    setSttState("loading");
 
     rec.onstop = async () => {
-      const blob = new Blob(sttChunksRef.current, { type: rec.mimeType || "audio/webm" });
-      const ext = rec.mimeType?.includes("webm") ? "recording.webm" : "recording.wav";
       rec.stream.getTracks().forEach((t) => t.stop());
+
+      const chunks = sttChunksRef.current;
+      if (chunks.length === 0) {
+        console.warn("[STT] No audio chunks captured");
+        setSttState("idle");
+        onSttError?.("未检测到音频，请重试");
+        return;
+      }
+
+      const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+      console.log("[STT] Blob size:", blob.size, "type:", blob.type);
+
+      if (blob.size < 2000) {
+        console.warn("[STT] Audio too short, size:", blob.size);
+        setSttState("idle");
+        onSttError?.("录音时间太短，请长按说话");
+        return;
+      }
+
+      const ext = rec.mimeType?.includes("webm") ? "recording.webm" : "recording.wav";
+
       try {
         const result = await sttTranscribe(blob, ext);
-        if (result) {
+        if (result && result.trim()) {
           setText((prev) => (prev ? prev + result : result));
+        } else {
+          onSttError?.("未能识别语音，请重试");
         }
       } catch (e) {
-        // STT 失败，通知上层
+        console.error("[STT] Transcription failed:", e);
         onSttError?.("语音识别失败，请重试");
       } finally {
-        setSttLoading(false);
+        setSttState("idle");
       }
     };
+
     rec.stop();
-  }, []);
+  }, [onSttError]);
 
   return (
     <div className="shrink-0 flex items-center gap-2 px-3 py-2 bg-[#f7f7f7] border-t border-[#ddd]">
@@ -156,9 +205,13 @@ export function Composer({
           <div className="relative flex-1">
             <input
               className="w-full h-9 rounded-md border border-[#ddd] px-3 pr-9 text-[15px] bg-white outline-none focus:border-[#07c160] disabled:bg-[#f5f5f5]"
-              placeholder={sttRecording ? "正在聆听..." : sttLoading ? "识别中..." : "输入消息..."}
+              placeholder={
+                sttState === "recording" ? "正在聆听..." :
+                sttState === "loading" ? "识别中..." :
+                "输入消息..."
+              }
               value={text}
-              disabled={disabled || sttRecording || sttLoading}
+              disabled={disabled || sttState !== "idle"}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -171,7 +224,7 @@ export function Composer({
             <button
               type="button"
               className={`absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
-                sttRecording
+                sttState === "recording"
                   ? "bg-[#07c160]"
                   : "hover:bg-[#f0f0f0]"
               }`}
@@ -187,10 +240,10 @@ export function Composer({
                 if (e.buttons) stopStt();
               }}
               onContextMenu={(e) => e.preventDefault()}
-              title="语音转文字"
-              disabled={disabled || sttLoading}
+              title="语音转文字（按住说话）"
+              disabled={disabled || sttState === "loading"}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={sttRecording ? "white" : "#999"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={sttState === "recording" ? "white" : "#999"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                 <line x1="12" y1="19" x2="12" y2="23"/>
@@ -203,7 +256,7 @@ export function Composer({
           <button
             type="button"
             className="h-9 px-4 rounded-md bg-[#07c160] text-white text-[15px] disabled:opacity-40 transition-colors"
-            disabled={disabled || !text.trim()}
+            disabled={disabled || !text.trim() || sttState !== "idle"}
             onClick={submit}
           >
             发送
