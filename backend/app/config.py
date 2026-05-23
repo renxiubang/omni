@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     asr_model: str = "paraformer-v2"
     cors_origins: str = "http://localhost:5173"
     max_audio_history_turns: int = 3
+    default_persona: str = "english_teacher"
+    personas_path: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:

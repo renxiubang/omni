@@ -3,10 +3,27 @@ export class PcmPlayer {
   private nextTime = 0;
   private sampleRate = 24000;
 
+  /** 在用户手势上下文中调用，提前创建并激活 AudioContext。
+   *  必须在 handleSse 之前调用，否则浏览器会因 autoplay policy 阻止发声。 */
+  prepare(sampleRate = 24000) {
+    this.sampleRate = sampleRate;
+    if (!this.ctx) {
+      this.ctx = new AudioContext({ sampleRate: this.sampleRate });
+      this.nextTime = this.ctx.currentTime;
+    }
+    if (this.ctx.state === "suspended") {
+      void this.ctx.resume();
+    }
+  }
+
   private ensureCtx() {
     if (!this.ctx) {
       this.ctx = new AudioContext({ sampleRate: this.sampleRate });
       this.nextTime = this.ctx.currentTime;
+      void this.ctx.resume();
+    }
+    if (this.ctx.state === "suspended") {
+      void this.ctx.resume();
     }
     return this.ctx;
   }

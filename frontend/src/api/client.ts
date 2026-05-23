@@ -1,10 +1,27 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
-export async function createSession(): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/sessions`, { method: "POST" });
+export async function createSession(persona?: string): Promise<string> {
+  const params = new URLSearchParams();
+  if (persona) params.set("persona", persona);
+  const qs = params.toString();
+  const url = `${API_BASE}/api/sessions${qs ? "?" + qs : ""}`;
+  const res = await fetch(url, { method: "POST" });
   if (!res.ok) throw new Error("Failed to create session");
   const data = await res.json();
   return data.session_id as string;
+}
+
+export interface PersonaInfo {
+  key: string;
+  name: string;
+  description: string;
+  difficulty: string;
+}
+
+export async function listPersonas(): Promise<PersonaInfo[]> {
+  const res = await fetch(`${API_BASE}/api/sessions/personas`);
+  if (!res.ok) throw new Error("Failed to list personas");
+  return res.json();
 }
 
 export async function loadMessages(sessionId: string) {

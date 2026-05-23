@@ -56,6 +56,7 @@ export function MessageBubble({
             ? "bg-[#95ec69] text-[#111]"
             : "bg-white text-[#111] border border-[#e5e5e5]"
         } ${isVoice && hasAudio ? "cursor-pointer active:opacity-80" : ""}`}
+        onClick={(isVoice && hasAudio) ? onPlayVoice : undefined}
       >
         {/* 智能体消息的语音条 — 在文字内容上方，独立可点击 */}
         {isAssistantWithAudio && (

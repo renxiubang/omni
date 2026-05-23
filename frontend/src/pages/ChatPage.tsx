@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   createSession,
+  listPersonas,
   loadMessages,
   streamChat,
   streamVoice,
+  type PersonaInfo,
 } from "../api/client";
 import { Composer } from "../components/Composer";
 import { MessageList } from "../components/MessageList";
@@ -19,6 +21,10 @@ export function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
+  const [personas, setPersonas] = useState<PersonaInfo[]>([]);
+  const [selectedPersona, setSelectedPersona] = useState<string>("");
+  /** 用于强制重渲染：voiceAudioUrls ref 变化时递增 */
+  const [voiceUrlVersion, setVoiceUrlVersion] = useState(0);
   const assistantIdRef = useRef<string | null>(null);
   const pendingUserIdRef = useRef<string | null>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
@@ -53,6 +59,7 @@ export function ChatPage() {
             if (audioUrl) {
               voiceAudioUrls.current.delete(pendingId);
               voiceAudioUrls.current.set(id, audioUrl);
+              setVoiceUrlVersion((v) => v + 1);
             }
             return prev.map((m, idx) =>
               idx === pendingIdx ? { ...m, id, content, source } : m,
@@ -118,6 +125,7 @@ export function ChatPage() {
               assistantAudioSampleRateRef.current.get(asstId) || 24000;
             const wavBlob = pcm16Base64ToWavBlob(chunks, sr);
             voiceAudioUrls.current.set(asstId, URL.createObjectURL(wavBlob));
+            setVoiceUrlVersion((v) => v + 1); // 触发重渲染使 hasAudio 生效
           }
           assistantAudioChunksRef.current.delete(asstId);
           assistantAudioSampleRateRef.current.delete(asstId);
@@ -154,6 +162,11 @@ export function ChatPage() {
   );
 
   useEffect(() => {
+    // 加载人格列表
+    listPersonas()
+      .then(setPersonas)
+      .catch(() => setPersonas([]));
+    // 创建会话（使用默认人格）
     createSession().then(async (id) => {
       setSessionId(id);
       try {
@@ -172,6 +185,33 @@ export function ChatPage() {
     });
   }, []);
 
+  /** 切换人格时重建会话 */
+  const handleChangePersona = useCallback(
+    async (personaKey: string) => {
+      setSelectedPersona(personaKey);
+      // 停止当前播放
+      if (activeAudioRef.current) {
+        activeAudioRef.current.pause();
+        activeAudioRef.current = null;
+      }
+      playingVoiceIdRef.current = null;
+      setPlayingVoiceId(null);
+      playerRef.current.stop();
+      playerRef.current = new PcmPlayer();
+      playerRef.current.prepare();
+      // 释放旧 object URL
+      voiceAudioUrls.current.forEach((url) => URL.revokeObjectURL(url));
+      voiceAudioUrls.current.clear();
+      setVoiceUrlVersion(0);
+      // 创建新会话
+      const id = await createSession(personaKey || undefined);
+      setSessionId(id);
+      setMessages([]);
+      setBusy(false);
+    },
+    [],
+  );
+
   const runStream = useCallback(
     async (fn: () => Promise<void>) => {
       if (!sessionId || busy) return;
@@ -180,6 +220,8 @@ export function ChatPage() {
       // 停止上一次播放并重置播放器
       playerRef.current.stop();
       playerRef.current = new PcmPlayer();
+      // 在用户手势中提前激活 AudioContext，避免 SSE 回调中懒创建被浏览器拦截
+      playerRef.current.prepare();
       try {
         await fn();
       } catch (e) {
@@ -272,6 +314,7 @@ export function ChatPage() {
       const ext = rec.mimeType?.includes("webm") ? "recording.webm" : "recording.wav";
       // 存储 object URL 用于点击回放
       voiceAudioUrls.current.set(pendingId, URL.createObjectURL(blob));
+      setVoiceUrlVersion((v) => v + 1); // 触发重渲染使 hasAudio 生效
       void runStream(() =>
         streamVoice(
           sid,
@@ -341,8 +384,25 @@ export function ChatPage() {
 
   return (
     <div className="h-full flex flex-col max-w-lg mx-auto bg-[#ededed] shadow-lg">
-      <header className="h-12 flex items-center justify-center bg-[#ededed] border-b border-[#d6d6d6] font-medium text-[17px]">
-        智能体对话
+      <header className="h-12 flex items-center justify-between px-3 bg-[#ededed] border-b border-[#d6d6d6]">
+        <span className="font-medium text-[17px]">英语对话练习</span>
+        {personas.length > 0 && (
+          <select
+            className="text-xs bg-white border border-[#d6d6d6] rounded px-2 py-1 max-w-[130px] truncate"
+            value={selectedPersona}
+            onChange={(e) => {
+              void handleChangePersona(e.target.value);
+            }}
+            disabled={busy}
+          >
+            <option value="">默认</option>
+            {personas.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
       </header>
       <MessageList
         messages={messages}

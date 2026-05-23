@@ -20,6 +20,7 @@ class StoredMessage:
 class Session:
     id: str
     messages: list[StoredMessage] = field(default_factory=list)
+    persona: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -27,9 +28,29 @@ class SessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
 
-    def create(self) -> Session:
+    def create(self, persona: str | None = None) -> Session:
+        """创建新会话，可选注入人格 system prompt。"""
+        from app.config import settings
+        from app.persona_loader import persona_store as ps
+
         session = Session(id=str(uuid.uuid4()))
         self._sessions[session.id] = session
+
+        # 根据人格标识注入 system 消息
+        persona_key = persona or settings.default_persona
+        try:
+            p = ps.get(persona_key)
+            session.persona = p.key
+            msg = StoredMessage(
+                id=str(uuid.uuid4()),
+                role="system",
+                content=p.system_prompt,
+                source="text",
+            )
+            session.messages.append(msg)
+        except Exception:
+            session.persona = ""
+
         return session
 
     def get(self, session_id: str) -> Session | None:
