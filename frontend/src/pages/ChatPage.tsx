@@ -115,7 +115,12 @@ export function ChatPage() {
       if (event === "done") {
         const asstId = assistantIdRef.current;
         assistantIdRef.current = null;
-        setStreamingAudioId(null); // 清除流式标记
+        // 等所有已调度的音频播完再清除流式标记，避免语音条提前消失
+        if (asstId && playerRef.current.isPlaying()) {
+          playerRef.current.onIdle(() => setStreamingAudioId(null));
+        } else {
+          setStreamingAudioId(null);
+        }
         setMessages((prev) => {
           const target = prev.find((m) => m.role === "assistant" && m.streaming);
           if (!target) return prev;
@@ -443,6 +448,8 @@ export function ChatPage() {
 
   /** 当前有音频可播放的消息 ID 集合（user 语音 + assistant TTS） */
   const audioAvailableIds = new Set(voiceAudioUrls.current.keys());
+  /** 有未完成的流式音频数据的消息 ID 集合（用于保持语音条可见，即使 streamingAudioId 已清除） */
+  const streamingDataIds = new Set(assistantAudioChunksRef.current.keys());
 
   // 组件卸载时释放所有 object URL
   useEffect(() => {
@@ -484,6 +491,7 @@ export function ChatPage() {
         playingVoiceId={playingVoiceId}
         audioAvailableIds={audioAvailableIds}
         streamingAudioId={streamingAudioId}
+        streamingDataIds={streamingDataIds}
         onPlayVoice={handlePlayVoice}
       />
       <Composer

@@ -4,10 +4,12 @@ interface Props {
   message: ChatMessage;
   /** 是否正在播放该消息的语音（WAV 回放） */
   isPlaying: boolean;
-  /** 是否有本地缓存的音频可播放 */
+  /** 是否有本地缓存的完整音频可播放 */
   hasAudio: boolean;
   /** 是否正在流式播放（PcmPlayer 实时播放中） */
   isStreamingPlaying?: boolean;
+  /** 是否有正在收集的流式音频数据（语音条应保持可见） */
+  hasStreamingData?: boolean;
   /** 点击播放回调 */
   onPlayVoice: () => void;
 }
@@ -44,6 +46,7 @@ export function MessageBubble({
   isPlaying,
   hasAudio,
   isStreamingPlaying,
+  hasStreamingData,
   onPlayVoice,
 }: Props) {
   const isUser = message.role === "user";
@@ -51,8 +54,8 @@ export function MessageBubble({
   const isAssistant = message.role === "assistant";
   const dur = message.duration ?? 0;
 
-  /** 是否显示智能体语音条：有音频 或 正在流式播放 */
-  const showAssistantVoice = isAssistant && (hasAudio || isStreamingPlaying);
+  /** 是否显示智能体语音条：有音频 或 正在流式播放 或 有收集中的流式数据 */
+  const showAssistantVoice = isAssistant && (hasAudio || isStreamingPlaying || hasStreamingData);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3 px-3`}>

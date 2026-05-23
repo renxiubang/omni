@@ -3,6 +3,10 @@ export class PcmPlayer {
   private nextTime = 0;
   private sampleRate = 24000;
   private muted = false;
+  /** 已调度但尚未播放完的 AudioBufferSourceNode 数量 */
+  private playingSources = 0;
+  /** 所有音频播放完毕时的回调 */
+  private idleCallback: (() => void) | null = null;
 
   /** 在用户手势上下文中调用，提前创建并激活 AudioContext。
    *  必须在 handleSse 之前调用，否则浏览器会因 autoplay policy 阻止发声。 */
@@ -29,6 +33,15 @@ export class PcmPlayer {
     return this.ctx;
   }
 
+  /** 所有已调度的 audio source 都播放完毕时调用 */
+  private checkIdle() {
+    if (this.playingSources <= 0 && this.idleCallback) {
+      const cb = this.idleCallback;
+      this.idleCallback = null;
+      cb();
+    }
+  }
+
   enqueuePcm16Base64(b64: string, sampleRate = 24000) {
     if (this.muted) return;
     const ctx = this.ensureCtx();
@@ -48,9 +61,25 @@ export class PcmPlayer {
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
+    this.playingSources++;
+    source.onended = () => {
+      this.playingSources--;
+      this.checkIdle();
+    };
     const start = Math.max(this.nextTime, ctx.currentTime);
     source.start(start);
     this.nextTime = start + buffer.duration;
+  }
+
+  /** 注册空闲回调：所有已调度音频播放完毕后触发 */
+  onIdle(callback: () => void) {
+    this.idleCallback = callback;
+    this.checkIdle();
+  }
+
+  /** 是否正在播放音频（有未完成的 source） */
+  isPlaying(): boolean {
+    return this.playingSources > 0;
   }
 
   /** 静音：停止当前播放并阻止后续入队播放 */
@@ -70,6 +99,8 @@ export class PcmPlayer {
   }
 
   stop() {
+    this.idleCallback = null; // 停止时不触发 idle 回调
+    this.playingSources = 0;
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;
