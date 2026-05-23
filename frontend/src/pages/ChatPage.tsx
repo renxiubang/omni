@@ -9,6 +9,7 @@ import {
   streamVoice,
   streamTts,
   translateToZh,
+  sttTranscribe,
   type PersonaInfo,
 } from "../api/client";
 import { Composer } from "../components/Composer";
@@ -16,6 +17,8 @@ import { MessageList } from "../components/MessageList";
 import { PcmPlayer } from "../audio/pcmPlayer";
 import { pcm16Base64ToWavBlob } from "../audio/pcmToWav";
 import { SettingsDrawer } from "./SettingsPage";
+import { Toast } from "../components/Toast";
+import { CallOptionsPopup } from "../components/CallOptionsPopup";
 import type { ChatMessage } from "../types/chat";
 
 export function ChatPage() {
@@ -67,6 +70,8 @@ export function ChatPage() {
   /** 正在加载翻译的消息 ID */
   const [translationLoadingId, setTranslationLoadingId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [showCallOptions, setShowCallOptions] = useState(false);
   /** 正在 TTS 流式播放的消息 ID（文本消息的语音播放） */
   const [ttsPlayingId, setTtsPlayingId] = useState<string | null>(null);
   /** TTS 专用的 PcmPlayer 实例，与通话播放器独立 */
@@ -365,8 +370,17 @@ export function ChatPage() {
 
   const MIN_VOICE_DURATION_SEC = 1; // 最短录音时长（秒）
 
-  const onVoiceStop = () => {
+  const handleVoiceStop = useCallback((action: "send" | "cancel" | "text") => {
     setIsRecording(false);
+    if (action === "cancel") {
+      // 取消发送：停止录音并释放资源
+      if (mediaRef.current) {
+        mediaRef.current.stream.getTracks().forEach((t) => t.stop());
+        mediaRef.current = null;
+      }
+      return;
+    }
+
     const rec = mediaRef.current;
     // 立即置空防止重复调用
     mediaRef.current = null;
@@ -384,6 +398,26 @@ export function ChatPage() {
       return;
     }
 
+    if (action === "text") {
+      // 转文字：录音后识别为文字发送
+      rec.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+        const ext = rec.mimeType?.includes("webm") ? "recording.webm" : "recording.wav";
+        rec.stream.getTracks().forEach((t) => t.stop());
+        try {
+          const result = await sttTranscribe(blob, ext);
+          if (result && sid) {
+            onSendText(result);
+          }
+        } catch {
+          // STT 失败，静默处理
+        }
+      };
+      rec.stop();
+      return;
+    }
+
+    // action === "send"：发送语音消息
     const pendingId = `user-pending-${Date.now()}`;
     pendingUserIdRef.current = pendingId;
     setMessages((prev) => [
@@ -408,7 +442,7 @@ export function ChatPage() {
       rec.stream.getTracks().forEach((t) => t.stop());
     };
     rec.stop();
-  };
+  }, [sessionId, busy]);
 
   /** 点击语音条播放 / 暂停 */
   const handlePlayVoice = useCallback((msgId: string) => {
@@ -595,6 +629,22 @@ export function ChatPage() {
     [ttsPlayingId],
   );
 
+  /* ---- 通话选项弹窗 & Toast ---- */
+  const handleCallButton = useCallback(() => {
+    setShowCallOptions(true);
+  }, []);
+
+  const handleVoiceCall = useCallback(() => {
+    if (!sessionId) return;
+    setShowCallOptions(false);
+    navigate(`/call/${sessionId}`);
+  }, [sessionId, navigate]);
+
+  const handleVideoCall = useCallback(() => {
+    setShowCallOptions(false);
+    setToastMsg("视频通话功能暂未实现");
+  }, []);
+
   /** 当前有音频可播放的消息 ID 集合（user 语音 + assistant TTS） */
   const audioAvailableIds = new Set(voiceAudioUrls.current.keys());
   /** 有未完成的流式音频数据的消息 ID 集合（用于保持语音条可见，即使 streamingAudioId 已清除） */
@@ -687,10 +737,23 @@ export function ChatPage() {
         isRecording={isRecording}
         onSendText={onSendText}
         onVoiceStart={onVoiceStart}
-        onVoiceStop={onVoiceStop}
-        onCall={() => sessionId && navigate(`/call/${sessionId}`)}
+        onVoiceStop={handleVoiceStop}
+        onCall={handleCallButton}
       />
       <SettingsDrawer visible={showSettings} onClose={() => setShowSettings(false)} />
+      {toastMsg && (
+        <Toast
+          message={toastMsg}
+          visible={!!toastMsg}
+          onClose={() => setToastMsg(null)}
+        />
+      )}
+      <CallOptionsPopup
+        visible={showCallOptions}
+        onClose={() => setShowCallOptions(false)}
+        onVoiceCall={handleVoiceCall}
+        onVideoCall={handleVideoCall}
+      />
     </div>
   );
 }

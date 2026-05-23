@@ -139,6 +139,25 @@ export async function translateToZh(text: string): Promise<TranslateResult> {
   return res.json();
 }
 
+/**
+ * 语音转文字：上传音频 Blob，返回识别文本。
+ * 用于输入框内语音识别图标——按住说话后转写为文字填入输入框。
+ */
+export async function sttTranscribe(blob: Blob, filename: string): Promise<string> {
+  const form = new FormData();
+  form.append("audio", blob, filename);
+  const res = await fetch(`${API_BASE}/api/chat/stt`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "STT failed");
+  }
+  const data = await res.json();
+  return data.text as string;
+}
+
 export interface TtsRequest {
   text: string;
   voice?: string;

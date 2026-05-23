@@ -4,6 +4,7 @@ import json
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.services.asr_client import asr_client
 from app.services.omni_client import omni_client
 from app.services.session_store import session_store
 from app.config import settings
@@ -23,6 +24,23 @@ def _guess_format(filename: str | None, content_type: str | None) -> str:
     if content_type and "wav" in content_type:
         return "wav"
     return "wav"
+
+
+@router.post("/stt")
+async def speech_to_text(
+    audio: UploadFile = File(...),
+) -> dict:
+    """语音转文字：上传音频，返回识别文本"""
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio")
+
+    fmt = _guess_format(audio.filename, audio.content_type)
+    try:
+        text = await asr_client.transcribe(audio_bytes, format_hint=fmt)
+        return {"text": text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"STT failed: {str(e)}")
 
 
 @router.post("/voice")

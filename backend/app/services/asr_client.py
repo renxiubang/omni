@@ -22,7 +22,7 @@ class AsrClient:
             recognition = Recognition(
                 model=settings.asr_model,
                 format=format_hint or "wav",
-                sample_rate=16000,
+                sample_rate=settings.asr_sample_rate,
                 callback=None,
             )
             result = recognition.call(tmp_path)
