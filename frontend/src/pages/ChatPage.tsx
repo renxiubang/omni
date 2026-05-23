@@ -346,7 +346,7 @@ export function ChatPage() {
     // 场景 A：正在流式播放中 → 中止播放（不影响语音合成，继续收集 PCM 数据）
     if (streamingAudioId === msgId) {
       playerRef.current.mute();
-      setPlayingVoiceId(null);
+      setStreamingAudioId(null);
       return;
     }
 
