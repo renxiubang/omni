@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat, sessions, voice
+from app.api import chat, sessions, translate, voice
 from app.config import settings
 from app.gateway import call_ws
 from app.persona_loader import persona_store
@@ -33,6 +33,7 @@ app.add_middleware(
 
 app.include_router(sessions.router)
 app.include_router(chat.router)
+app.include_router(translate.router)
 app.include_router(voice.router)
 app.include_router(call_ws.router)
 

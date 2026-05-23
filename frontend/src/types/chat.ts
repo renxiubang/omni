@@ -8,4 +8,6 @@ export interface ChatMessage {
   streaming?: boolean;
   /** 语音消息时长（秒），仅 source === "voice" 时有效 */
   duration?: number;
+  /** 翻译后的中文文本 */
+  translation?: string;
 }

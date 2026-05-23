@@ -12,6 +12,12 @@ interface Props {
   hasStreamingData?: boolean;
   /** 点击播放回调 */
   onPlayVoice: () => void;
+  /** 是否显示翻译 */
+  showTranslation?: boolean;
+  /** 翻译加载中 */
+  translationLoading?: boolean;
+  /** 点击翻译按钮回调 */
+  onToggleTranslation?: () => void;
 }
 
 /** 模拟语音波形条，播放时带缩放动画 */
@@ -48,6 +54,9 @@ export function MessageBubble({
   isStreamingPlaying,
   hasStreamingData,
   onPlayVoice,
+  showTranslation,
+  translationLoading,
+  onToggleTranslation,
 }: Props) {
   const isUser = message.role === "user";
   const isVoice = message.source === "voice" && isUser;
@@ -81,18 +90,37 @@ export function MessageBubble({
       >
         {/* 智能体消息的语音条 — 在文字内容上方，独立可点击 */}
         {showAssistantVoice && (
-          <div
-            className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[#e5e5e5] cursor-pointer active:opacity-80"
-            onClick={onPlayVoice}
-          >
-            <span className="text-[11px] text-[#999] select-none min-w-[70px]">
-              {isStreamingPlaying && "⬤ 正在播放"}
-              {!isStreamingPlaying && (isPlaying ? "⬤ 播放中" : "▶ 点击播放语音")}
-            </span>
-            <VoiceWave
-              color={isStreamingPlaying || isPlaying ? "#07c160" : "#bbb"}
-              animating={isStreamingPlaying || isPlaying}
-            />
+          <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[#e5e5e5]">
+            <div
+              className="flex items-center gap-2 flex-1 cursor-pointer active:opacity-80"
+              onClick={onPlayVoice}
+            >
+              <span className="text-[11px] text-[#999] select-none min-w-[70px]">
+                {isStreamingPlaying && "⬤ 正在播放"}
+                {!isStreamingPlaying && (isPlaying ? "⬤ 播放中" : "▶ 点击播放语音")}
+              </span>
+              <VoiceWave
+                color={isStreamingPlaying || isPlaying ? "#07c160" : "#bbb"}
+                animating={isStreamingPlaying || isPlaying}
+              />
+            </div>
+            {/* 翻译按钮 */}
+            {onToggleTranslation && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleTranslation();
+                }}
+                className={`shrink-0 text-xs font-medium px-2 py-0.5 rounded select-none transition-colors ${
+                  showTranslation
+                    ? "bg-[#07c160] text-white"
+                    : "bg-[#f0f0f0] text-[#666] hover:bg-[#e5e5e5]"
+                }`}
+                disabled={translationLoading}
+              >
+                {translationLoading ? "译中..." : "译"}
+              </button>
+            )}
           </div>
         )}
 
@@ -114,6 +142,12 @@ export function MessageBubble({
             {message.content || (message.streaming ? "..." : "")}
             {message.streaming && (
               <span className="inline-block w-1 h-4 ml-0.5 bg-[#888] animate-pulse align-middle" />
+            )}
+            {/* 翻译内容显示 */}
+            {showTranslation && message.translation && (
+              <div className="mt-2 pt-2 border-t border-[#e5e5e5] text-[14px] leading-relaxed text-[#666]">
+                {message.translation}
+              </div>
             )}
           </>
         )}

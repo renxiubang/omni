@@ -11,6 +11,12 @@ interface Props {
   /** 有未完成的流式音频数据的消息 ID 集合（用于保持语音条可见） */
   streamingDataIds: Set<string>;
   onPlayVoice: (id: string) => void;
+  /** 当前正在显示翻译的消息 ID */
+  translatingId: string | null;
+  /** 正在加载翻译的消息 ID */
+  translationLoadingId: string | null;
+  /** 切换翻译显示回调 */
+  onToggleTranslation: (id: string) => void;
 }
 
 export function MessageList({
@@ -20,6 +26,9 @@ export function MessageList({
   streamingAudioId,
   streamingDataIds,
   onPlayVoice,
+  translatingId,
+  translationLoadingId,
+  onToggleTranslation,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -38,6 +47,13 @@ export function MessageList({
           isStreamingPlaying={streamingAudioId === m.id}
           hasStreamingData={streamingDataIds.has(m.id)}
           onPlayVoice={() => onPlayVoice(m.id)}
+          showTranslation={translatingId === m.id}
+          translationLoading={translationLoadingId === m.id}
+          onToggleTranslation={
+            m.role === "assistant"
+              ? () => onToggleTranslation(m.id)
+              : undefined
+          }
         />
       ))}
       <div ref={bottomRef} />

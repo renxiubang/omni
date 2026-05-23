@@ -115,3 +115,26 @@ export function callWsUrl(sessionId: string) {
   const host = API_BASE ? new URL(API_BASE).host : loc.host;
   return `${proto}//${host}/api/call?session_id=${encodeURIComponent(sessionId)}`;
 }
+
+export interface TranslateResult {
+  text: string;
+  translation: string;
+  source: string;
+  target: string;
+}
+
+/**
+ * 调用后端翻译 API（使用多模态大模型），将英文翻译为中文
+ */
+export async function translateToZh(text: string): Promise<TranslateResult> {
+  const res = await fetch(`${API_BASE}/api/translate/to-zh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Translation failed");
+  }
+  return res.json();
+}

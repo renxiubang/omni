@@ -7,6 +7,7 @@ import {
   loadMessages,
   streamChat,
   streamVoice,
+  translateToZh,
   type PersonaInfo,
 } from "../api/client";
 import { Composer } from "../components/Composer";
@@ -47,6 +48,10 @@ export function ChatPage() {
   const tempWavUrlRef = useRef<string | null>(null);
   /** 后端配置的输出采样率 */
   const outputSampleRateRef = useRef(16000);
+  /** 当前正在显示翻译的消息 ID */
+  const [translatingId, setTranslatingId] = useState<string | null>(null);
+  /** 正在加载翻译的消息 ID */
+  const [translationLoadingId, setTranslationLoadingId] = useState<string | null>(null);
 
   // 从路由 state 读取通话时长，挂断后显示通话记录
   useEffect(() => {
@@ -478,6 +483,41 @@ export function ChatPage() {
     });
   }, [streamingAudioId]);
 
+  /** 切换翻译显示 */
+  const handleToggleTranslation = useCallback(
+    async (msgId: string) => {
+      const msg = messages.find((m) => m.id === msgId);
+      if (!msg) return;
+
+      // 如果已经显示翻译，则隐藏
+      if (translatingId === msgId) {
+        setTranslatingId(null);
+        return;
+      }
+
+      // 如果消息已有翻译内容，直接显示
+      if (msg.translation) {
+        setTranslatingId(msgId);
+        return;
+      }
+
+      // 否则调用翻译 API
+      setTranslationLoadingId(msgId);
+      try {
+        const result = await translateToZh(msg.content);
+        setMessages((prev) =>
+          prev.map((m) => (m.id === msgId ? { ...m, translation: result.translation } : m)),
+        );
+        setTranslatingId(msgId);
+      } catch (e) {
+        console.error("Translation failed:", e);
+      } finally {
+        setTranslationLoadingId(null);
+      }
+    },
+    [messages, translatingId],
+  );
+
   /** 当前有音频可播放的消息 ID 集合（user 语音 + assistant TTS） */
   const audioAvailableIds = new Set(voiceAudioUrls.current.keys());
   /** 有未完成的流式音频数据的消息 ID 集合（用于保持语音条可见，即使 streamingAudioId 已清除） */
@@ -525,6 +565,9 @@ export function ChatPage() {
         streamingAudioId={streamingAudioId}
         streamingDataIds={streamingDataIds}
         onPlayVoice={handlePlayVoice}
+        translatingId={translatingId}
+        translationLoadingId={translationLoadingId}
+        onToggleTranslation={handleToggleTranslation}
       />
       <Composer
         disabled={busy || !sessionId}
