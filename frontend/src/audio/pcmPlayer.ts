@@ -1,7 +1,7 @@
 export class PcmPlayer {
   private ctx: AudioContext | null = null;
   private nextTime = 0;
-  private sampleRate = 24000;
+  private sampleRate = 16000;
   private muted = false;
   /** 已调度但尚未播放完的 AudioBufferSourceNode 数量 */
   private playingSources = 0;
@@ -10,7 +10,7 @@ export class PcmPlayer {
 
   /** 在用户手势上下文中调用，提前创建并激活 AudioContext。
    *  必须在 handleSse 之前调用，否则浏览器会因 autoplay policy 阻止发声。 */
-  prepare(sampleRate = 24000) {
+  prepare(sampleRate = 16000) {
     this.sampleRate = sampleRate;
     if (!this.ctx) {
       this.ctx = new AudioContext({ sampleRate: this.sampleRate });
@@ -42,7 +42,7 @@ export class PcmPlayer {
     }
   }
 
-  enqueuePcm16Base64(b64: string, sampleRate = 24000) {
+  enqueuePcm16Base64(b64: string, sampleRate = 16000) {
     if (this.muted) return;
     const ctx = this.ensureCtx();
     if (sampleRate !== this.sampleRate) {

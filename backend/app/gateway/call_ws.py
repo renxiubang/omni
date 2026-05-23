@@ -7,6 +7,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from app.services.omni_client import omni_client
 from app.services.session_store import session_store
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -73,7 +74,7 @@ async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
                             {
                                 "type": "assistant_audio",
                                 "data": audio_b64,
-                                "sample_rate": 24000,
+                                "sample_rate": settings.output_sample_rate,
                             },
                         )
             except asyncio.CancelledError:

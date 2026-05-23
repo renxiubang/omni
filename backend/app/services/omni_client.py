@@ -1,3 +1,5 @@
+import base64
+import struct
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -5,6 +7,29 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 from app.services.session_store import StoredMessage
+
+
+def _resample_pcm16_base64(audio_b64: str, src_rate: int, dst_rate: int) -> str:
+    """将 base64 PCM16 音频从 src_rate 重采样到 dst_rate（线性插值）。"""
+    raw = base64.b64decode(audio_b64)
+    num_samples = len(raw) // 2
+    src = struct.unpack(f"<{num_samples}h", raw)
+
+    ratio = src_rate / dst_rate
+    dst_len = int(num_samples / ratio)
+
+    dst = [0] * dst_len
+    for i in range(dst_len):
+        pos = i * ratio
+        idx = int(pos)
+        frac = pos - idx
+        if idx + 1 < num_samples:
+            dst[i] = int(src[idx] + (src[idx + 1] - src[idx]) * frac)
+        else:
+            dst[i] = src[idx]
+
+    resampled = struct.pack(f"<{dst_len}h", *dst)
+    return base64.b64encode(resampled).decode("ascii")
 
 
 class OmniClient:
@@ -104,6 +129,13 @@ class OmniClient:
                     else None
                 )
             if text or audio_b64:
+                # 将 DashScope 原始采样率重采样到统一输出采样率
+                if audio_b64:
+                    audio_b64 = _resample_pcm16_base64(
+                        audio_b64,
+                        settings.dashscope_audio_sample_rate,
+                        settings.output_sample_rate,
+                    )
                 yield text, audio_b64
 
 

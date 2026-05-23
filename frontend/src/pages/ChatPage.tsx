@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   createSession,
+  fetchConfig,
   listPersonas,
   loadMessages,
   streamChat,
@@ -44,6 +45,8 @@ export function ChatPage() {
   const assistantAudioSampleRateRef = useRef<Map<string, number>>(new Map());
   /** 流式期间点击"从头播放"时创建的临时 WAV URL，用于释放 */
   const tempWavUrlRef = useRef<string | null>(null);
+  /** 后端配置的输出采样率 */
+  const outputSampleRateRef = useRef(16000);
 
   // 从路由 state 读取通话时长，挂断后显示通话记录
   useEffect(() => {
@@ -124,7 +127,7 @@ export function ChatPage() {
         });
       }
       if (event === "assistant_audio") {
-        const sampleRate = Number(data.sample_rate) || 24000;
+        const sampleRate = Number(data.sample_rate) || outputSampleRateRef.current;
         playerRef.current.enqueuePcm16Base64(String(data.data), sampleRate);
         // 收集音频数据供回放
         const asstId = assistantIdRef.current;
@@ -156,7 +159,7 @@ export function ChatPage() {
           const chunks = assistantAudioChunksRef.current.get(asstId);
           if (chunks && chunks.length > 0) {
             const sr =
-              assistantAudioSampleRateRef.current.get(asstId) || 24000;
+              assistantAudioSampleRateRef.current.get(asstId) || outputSampleRateRef.current;
             const wavBlob = pcm16Base64ToWavBlob(chunks, sr);
             voiceAudioUrls.current.set(asstId, URL.createObjectURL(wavBlob));
             setVoiceUrlVersion((v) => v + 1); // 触发重渲染使 hasAudio 生效
@@ -197,6 +200,12 @@ export function ChatPage() {
   );
 
   useEffect(() => {
+    // 加载后端配置
+    fetchConfig()
+      .then((c) => {
+        outputSampleRateRef.current = c.output_sample_rate;
+      })
+      .catch(() => {});
     // 加载人格列表
     listPersonas()
       .then(setPersonas)
@@ -383,7 +392,7 @@ export function ChatPage() {
           tempWavUrlRef.current = null;
         }
 
-        const sr = assistantAudioSampleRateRef.current.get(msgId) || 24000;
+        const sr = assistantAudioSampleRateRef.current.get(msgId) || outputSampleRateRef.current;
         const wavBlob = pcm16Base64ToWavBlob(chunks, sr);
         const url = URL.createObjectURL(wavBlob);
         tempWavUrlRef.current = url;

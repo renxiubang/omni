@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { callWsUrl } from "../api/client";
+import { callWsUrl, fetchConfig } from "../api/client";
 import { PcmPlayer } from "../audio/pcmPlayer";
 
 function formatDuration(seconds: number): string {
@@ -49,6 +49,9 @@ export function CallScreen() {
   const playerRef = useRef(new PcmPlayer());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const subtitleRef = useRef<HTMLDivElement>(null);
+  // 防止回声反馈：AI 说话时忽略 VAD 检测
+  const ignoreVadUntil = useRef(0);
+  const agentTurnActive = useRef(false);
 
   // 同步字幕列表：userLine / assistantLine 变化时追加
   useEffect(() => {
@@ -145,16 +148,28 @@ export function CallScreen() {
           break;
         case "assistant_token":
           setAssistantLine((t) => t + (msg.delta ?? ""));
+          if (!agentTurnActive.current) {
+            agentTurnActive.current = true;
+            ignoreVadUntil.current = Date.now() + 2000;
+          }
           break;
         case "assistant_audio":
-          playerRef.current.enqueuePcm16Base64(msg.data, msg.sample_rate ?? 24000);
+          playerRef.current.enqueuePcm16Base64(msg.data, msg.sample_rate ?? 16000);
+          if (!agentTurnActive.current) {
+            agentTurnActive.current = true;
+            ignoreVadUntil.current = Date.now() + 2000;
+          }
           break;
         case "turn_cancelled":
           playerRef.current.stop();
           playerRef.current = new PcmPlayer();
           setAssistantLine("");
+          agentTurnActive.current = false;
+          ignoreVadUntil.current = 0;
           break;
         case "turn_end":
+          agentTurnActive.current = false;
+          ignoreVadUntil.current = 0;
           break;
         case "error":
           setStatus(msg.message ?? "错误");
@@ -164,6 +179,10 @@ export function CallScreen() {
 
     (async () => {
       try {
+        // 从后端获取统一采样率配置
+        const config = await fetchConfig();
+        const sampleRate = config.output_sample_rate;
+
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
@@ -171,12 +190,17 @@ export function CallScreen() {
             autoGainControl: true,
           },
         });
-        const ctx = new AudioContext({ sampleRate: 16000 });
+        const ctx = new AudioContext({ sampleRate });
         await ctx.audioWorklet.addModule("/audio-worklet-processor.js");
         const source = ctx.createMediaStreamSource(stream);
         const node = new AudioWorkletNode(ctx, "utterance-processor");
         node.port.onmessage = (e) => {
           if (e.data.type === "speechStart") {
+            // 忽略 AI 说话时的 VAD 检测（防止回声反馈）
+            if (Date.now() < ignoreVadUntil.current) {
+              console.log("[CallScreen] Ignoring VAD during agent speech (echo prevention)");
+              return;
+            }
             playerRef.current.stop();
             playerRef.current = new PcmPlayer();
             setAssistantLine("");

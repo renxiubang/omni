@@ -40,3 +40,10 @@ app.include_router(call_ws.router)
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/config")
+def get_config() -> dict:
+    return {
+        "output_sample_rate": settings.output_sample_rate,
+    }

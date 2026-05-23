@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     max_audio_history_turns: int = 3
     default_persona: str = "english_teacher"
     personas_path: str = ""
+    # DashScope omni 模型输出的原始音频采样率 (Hz)
+    dashscope_audio_sample_rate: int = 24000
+    # 统一输出采样率，与前端麦克风 AudioContext 一致 (Hz)
+    output_sample_rate: int = 24000
 
     @property
     def cors_origin_list(self) -> list[str]:

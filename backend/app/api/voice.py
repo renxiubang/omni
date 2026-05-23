@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 
 from app.services.omni_client import omni_client
 from app.services.session_store import session_store
+from app.config import settings
 
 router = APIRouter(prefix="/api/chat", tags=["voice"])
 
@@ -71,7 +72,7 @@ async def chat_voice(
                     full.append(text_delta)
                     yield _sse("token", {"delta": text_delta})
                 if audio_b64:
-                    yield _sse("assistant_audio", {"data": audio_b64, "sample_rate": 24000})
+                    yield _sse("assistant_audio", {"data": audio_b64, "sample_rate": settings.output_sample_rate})
             assistant = session_store.add_message(
                 session_id,
                 role="assistant",

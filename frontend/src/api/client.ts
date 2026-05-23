@@ -1,5 +1,19 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
+export interface AppConfig {
+  output_sample_rate: number;
+}
+
+let _cachedConfig: AppConfig | null = null;
+
+export async function fetchConfig(): Promise<AppConfig> {
+  if (_cachedConfig) return _cachedConfig;
+  const res = await fetch(`${API_BASE}/api/config`);
+  if (!res.ok) throw new Error("Failed to fetch config");
+  _cachedConfig = await res.json();
+  return _cachedConfig!;
+}
+
 export async function createSession(persona?: string): Promise<string> {
   const params = new URLSearchParams();
   if (persona) params.set("persona", persona);
