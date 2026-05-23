@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.schemas.chat import ChatStreamRequest
 from app.services.omni_client import omni_client
 from app.services.session_store import session_store
@@ -46,9 +47,12 @@ async def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
         messages = omni_client.build_messages(session.messages)
         full: list[str] = []
         try:
-            async for token in omni_client.stream_text(messages):
-                full.append(token)
-                yield _sse("token", {"delta": token})
+            async for text_delta, audio_b64 in omni_client.stream_call(messages):
+                if text_delta:
+                    full.append(text_delta)
+                    yield _sse("token", {"delta": text_delta})
+                if audio_b64:
+                    yield _sse("assistant_audio", {"data": audio_b64, "sample_rate": settings.output_sample_rate})
             assistant = session_store.add_message(
                 body.session_id,
                 role="assistant",
