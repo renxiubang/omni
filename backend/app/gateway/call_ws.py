@@ -3,7 +3,7 @@ import base64
 import json
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from app.services.omni_client import omni_client
 from app.services.session_store import session_store
@@ -17,7 +17,7 @@ async def _send(ws: WebSocket, payload: dict) -> None:
 
 
 @router.websocket("/api/call")
-async def call_ws(ws: WebSocket, session_id: str) -> None:
+async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
     await ws.accept()
     session = session_store.get(session_id)
     if not session:

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   createSession,
   listPersonas,
@@ -16,6 +16,7 @@ import type { ChatMessage } from "../types/chat";
 
 export function ChatPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
@@ -43,6 +44,28 @@ export function ChatPage() {
   const assistantAudioSampleRateRef = useRef<Map<string, number>>(new Map());
   /** 流式期间点击"从头播放"时创建的临时 WAV URL，用于释放 */
   const tempWavUrlRef = useRef<string | null>(null);
+
+  // 从路由 state 读取通话时长，挂断后显示通话记录
+  useEffect(() => {
+    const state = location.state as { callDuration?: number } | null;
+    if (state?.callDuration && state.callDuration > 0) {
+      const dur = state.callDuration;
+      const min = Math.floor(dur / 60);
+      const sec = dur % 60;
+      const content = `通话时长 ${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `call-${Date.now()}`,
+          role: "system",
+          content,
+          source: "call",
+        },
+      ]);
+      // 清除 state，防止刷新后重复添加
+      navigate("/", { replace: true, state: {} });
+    }
+  }, [location.state]);
 
   const handleSse = useCallback(
     (event: string, data: Record<string, unknown>) => {

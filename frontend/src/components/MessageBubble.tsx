@@ -52,10 +52,22 @@ export function MessageBubble({
   const isUser = message.role === "user";
   const isVoice = message.source === "voice" && isUser;
   const isAssistant = message.role === "assistant";
+  const isCallRecord = message.source === "call" && message.role === "system";
   const dur = message.duration ?? 0;
 
   /** 是否显示智能体语音条：有音频 或 正在流式播放 或 有收集中的流式数据 */
   const showAssistantVoice = isAssistant && (hasAudio || isStreamingPlaying || hasStreamingData);
+
+  // 通话记录消息：居中胶囊样式
+  if (isCallRecord) {
+    return (
+      <div className="flex justify-center my-3 px-3">
+        <span className="text-xs text-[#999] bg-[#f0f0f0] rounded-full px-4 py-1.5 inline-flex items-center gap-1">
+          📞 {message.content}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3 px-3`}>
