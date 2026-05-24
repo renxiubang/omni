@@ -52,6 +52,8 @@ export function CallScreen() {
   // 防止回声反馈：AI 说话时忽略 VAD 检测
   const ignoreVadUntil = useRef(0);
   const agentTurnActive = useRef(false);
+  // 保存麦克风流引用，用于动态禁用/启用轨道
+  const micStreamRef = useRef<MediaStream | null>(null);
 
   // 同步字幕列表：userLine / assistantLine 变化时追加
   useEffect(() => {
@@ -63,6 +65,38 @@ export function CallScreen() {
       });
     }
   }, [userLine]);
+
+  // 设置播放器回调：AI播放开始时禁用麦克风，播放结束后恢复
+  const setupPlayerCallbacks = useCallback(() => {
+    const player = playerRef.current;
+    const stream = micStreamRef.current;
+    
+    if (!player || !stream) return;
+    
+    const micTrack = stream.getAudioTracks()[0];
+    if (!micTrack) return;
+    
+    player.onPlaybackStart = () => {
+      console.log("[CallScreen] Playback started, disabling mic track");
+      micTrack.enabled = false;
+      agentTurnActive.current = true;
+      // 设置一个较长的忽略时间，实际会在播放结束时恢复
+      ignoreVadUntil.current = Date.now() + 10000;
+    };
+    
+    player.onPlaybackEnd = () => {
+      console.log("[CallScreen] Playback ended, will re-enable mic track after delay");
+      agentTurnActive.current = false;
+      // 延迟 500ms 后恢复麦克风，避免尾部回声
+      setTimeout(() => {
+        if (micTrack) {
+          micTrack.enabled = true;
+          ignoreVadUntil.current = 0;
+          console.log("[CallScreen] Mic track re-enabled");
+        }
+      }, 500);
+    };
+  }, []);
 
   useEffect(() => {
     if (assistantLine) {
@@ -163,6 +197,8 @@ export function CallScreen() {
         case "turn_cancelled":
           playerRef.current.stop();
           playerRef.current = new PcmPlayer();
+          // 重新设置播放器回调
+          setupPlayerCallbacks();
           setAssistantLine("");
           agentTurnActive.current = false;
           ignoreVadUntil.current = 0;
@@ -177,6 +213,9 @@ export function CallScreen() {
       }
     };
 
+    // 设置播放器回调（用于麦克风轨道静音）
+    setupPlayerCallbacks();
+
     (async () => {
       try {
         // 从后端获取统一采样率配置
@@ -190,6 +229,9 @@ export function CallScreen() {
             autoGainControl: true,
           },
         });
+        // 保存麦克风流引用，用于回声消除时禁用/启用轨道
+        micStreamRef.current = stream;
+        
         const ctx = new AudioContext({ sampleRate });
         await ctx.audioWorklet.addModule("/audio-worklet-processor.js");
         const source = ctx.createMediaStreamSource(stream);

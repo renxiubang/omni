@@ -39,9 +39,6 @@ export function Composer({
   const sttWsRef = useRef<WebSocket | null>(null);
   const sttAbortRef = useRef(false);
 
-  /** 最小录音时长（毫秒），小于此值提示用户 */
-  const MIN_STT_DURATION_MS = 500;
-
   /** 外部语音转文字结果：填入输入框并切换到文字模式 */
   useEffect(() => {
     if (voiceTextResult) {
@@ -73,7 +70,13 @@ export function Composer({
     sttBaseTextRef.current = text; // 记住已输入的文字
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
 
       if (sttAbortRef.current) {
         stream.getTracks().forEach((t) => t.stop());

@@ -5,8 +5,8 @@ class UtteranceProcessor extends AudioWorkletProcessor {
     this.speechBuffer = [];
     this.silenceFrames = 0;
     this.speechFrames = 0;
-    this.energyThreshold = 0.01;
-    this.minSpeechFrames = 8;
+    this.energyThreshold = 0.015;
+    this.minSpeechFrames = 12;
     this.maxSilenceFrames = 25;
   }
 

@@ -7,7 +7,6 @@ import {
   loadMessages,
   streamChat,
   streamVoice,
-  streamTts,
   translateToZh,
   sttTranscribe,
   type PersonaInfo,
@@ -44,7 +43,7 @@ export function ChatPage() {
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
   const [selectedPersona, setSelectedPersona] = useState<string>("");
   /** 用于强制重渲染：voiceAudioUrls ref 变化时递增 */
-  const [voiceUrlVersion, setVoiceUrlVersion] = useState(0);
+  const [, setVoiceUrlVersion] = useState(0);
   /** 正在流式播放音频的 assistant 消息 ID（null 表示未在播放或已中止） */
   const [streamingAudioId, setStreamingAudioId] = useState<string | null>(null);
   const assistantIdRef = useRef<string | null>(null);
@@ -74,12 +73,6 @@ export function ChatPage() {
   const [showCallOptions, setShowCallOptions] = useState(false);
   /** 语音转文字结果：非空时将填入输入框 */
   const [voiceTextResult, setVoiceTextResult] = useState<string | null>(null);
-  /** 正在 TTS 流式播放的消息 ID（文本消息的语音播放） */
-  const [ttsPlayingId, setTtsPlayingId] = useState<string | null>(null);
-  /** TTS 专用的 PcmPlayer 实例，与通话播放器独立 */
-  const ttsPlayerRef = useRef(new PcmPlayer());
-  /** 标记 TTS 是否正在运行，用于中止 */
-  const ttsAbortRef = useRef(false);
 
   /** iOS Safari 键盘修复：动态跟踪 visualViewport，保持固定定位元素始终可见 */
   const [vvTop, setVvTop] = useState(0);
@@ -126,7 +119,7 @@ export function ChatPage() {
   }, [location.state]);
 
   const handleSse = useCallback(
-    (event: string, data: Record<string, unknown>) => {
+    async (event: string, data: Record<string, unknown>) => {
       if (event === "user_message") {
         const id = String(data.id);
         const content = String(data.content ?? "");
@@ -183,7 +176,7 @@ export function ChatPage() {
       }
       if (event === "assistant_audio") {
         const sampleRate = Number(data.sample_rate) || outputSampleRateRef.current;
-        playerRef.current.enqueuePcm16Base64(String(data.data), sampleRate);
+        await playerRef.current.enqueuePcm16Base64(String(data.data), sampleRate);
         // 收集音频数据供回放
         const asstId = assistantIdRef.current;
         if (asstId) {
@@ -198,7 +191,7 @@ export function ChatPage() {
         assistantIdRef.current = null;
         // 等所有已调度的音频播完再清除流式标记，避免语音条提前消失
         if (asstId && playerRef.current.isPlaying()) {
-          playerRef.current.onIdle(() => setStreamingAudioId(null));
+          void playerRef.current.waitForFinish().then(() => setStreamingAudioId(null));
         } else {
           setStreamingAudioId(null);
         }
@@ -298,7 +291,7 @@ export function ChatPage() {
       setStreamingAudioId(null);
       playerRef.current.stop();
       playerRef.current = new PcmPlayer();
-      playerRef.current.prepare();
+      await playerRef.current.prepare(outputSampleRateRef.current);
       // 释放旧 object URL
       voiceAudioUrls.current.forEach((url) => URL.revokeObjectURL(url));
       voiceAudioUrls.current.clear();
@@ -320,8 +313,8 @@ export function ChatPage() {
       // 停止上一次播放并重置播放器
       playerRef.current.stop();
       playerRef.current = new PcmPlayer();
-      // 在用户手势中提前激活 AudioContext，避免 SSE 回调中懒创建被浏览器拦截
-      playerRef.current.prepare();
+      // 在用户手势中提前激活 AudioContext，await 确保 resume 完成
+      await playerRef.current.prepare(outputSampleRateRef.current);
       // 应用保存的语速
       playerRef.current.setPlaybackRate(getSavedRate());
       try {
@@ -610,49 +603,6 @@ export function ChatPage() {
     [messages, translatingId],
   );
 
-  /** 对文本消息点击"播放语音"：调用 TTS 接口流式播放 */
-  const handlePlayTextVoice = useCallback(
-    async (msgId: string, text: string) => {
-      // 如果正在播放同一条，则停止
-      if (ttsPlayingId === msgId) {
-        ttsAbortRef.current = true;
-        ttsPlayerRef.current.stop();
-        setTtsPlayingId(null);
-        return;
-      }
-      // 停止上一次
-      ttsAbortRef.current = true;
-      ttsPlayerRef.current.stop();
-      ttsPlayerRef.current = new PcmPlayer();
-      ttsPlayerRef.current.prepare();
-      ttsPlayerRef.current.setPlaybackRate(getSavedRate());
-      ttsAbortRef.current = false;
-      setTtsPlayingId(msgId);
-
-      try {
-        await streamTts({ text }, (event, data) => {
-          if (ttsAbortRef.current) return;
-          if (event === "assistant_audio") {
-            ttsPlayerRef.current.enqueuePcm16Base64(
-              String(data.data),
-              outputSampleRateRef.current,
-            );
-          }
-          if (event === "done" || event === "error") {
-            if (event === "error") console.error("TTS error:", data.message);
-            ttsPlayerRef.current.onIdle(() => {
-              if (!ttsAbortRef.current) setTtsPlayingId(null);
-            });
-          }
-        });
-      } catch (e) {
-        console.error("TTS failed:", e);
-        setTtsPlayingId(null);
-      }
-    },
-    [ttsPlayingId],
-  );
-
   /* ---- 通话选项弹窗 & Toast ---- */
   const handleCallButton = useCallback(() => {
     setShowCallOptions(true);
@@ -669,7 +619,7 @@ export function ChatPage() {
     setToastMsg("视频通话功能暂未实现");
   }, []);
 
-  /** 当前有音频可播放的消息 ID 集合（user 语音 + assistant TTS） */
+  /** TTS 相关状态已移除，统一使用模型音频输出 */
   const audioAvailableIds = new Set(voiceAudioUrls.current.keys());
   /** 有未完成的流式音频数据的消息 ID 集合（用于保持语音条可见，即使 streamingAudioId 已清除） */
   const streamingDataIds = new Set(assistantAudioChunksRef.current.keys());
@@ -756,8 +706,6 @@ export function ChatPage() {
         translatingId={translatingId}
         translationLoadingId={translationLoadingId}
         onToggleTranslation={handleToggleTranslation}
-        ttsPlayingId={ttsPlayingId}
-        onPlayTextVoice={handlePlayTextVoice}
       />
       <Composer
         disabled={busy || !sessionId}

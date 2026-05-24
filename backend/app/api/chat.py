@@ -2,7 +2,6 @@ import json
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.schemas.chat import ChatStreamRequest
@@ -10,11 +9,6 @@ from app.services.omni_client import omni_client
 from app.services.session_store import session_store
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
-
-
-class TtsRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=8000)
-    voice: str = "cherry"  # DashScope 音色名称，默认 cherry
 
 
 def _sse(event: str, data: dict) -> str:
@@ -70,66 +64,4 @@ async def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
     )
 
 
-@router.post("/tts")
-async def chat_tts(body: TtsRequest) -> StreamingResponse:
-    """将文本合成为语音并流式返回 PCM16 base64 音频块（SSE）。
 
-    与 /api/chat/voice 使用相同的 DashScope omni 模型，
-    但只取音频部分，不依赖 session 上下文，可直接对任意文本合成。
-    """
-
-    async def generate():
-        try:
-            from openai import AsyncOpenAI
-            from app.config import settings
-
-            client = AsyncOpenAI(
-                api_key=settings.dashscope_api_key,
-                base_url=settings.dashscope_base_url,
-            )
-            # 构造单轮消息，让模型"朗读"这段文本
-            messages = [
-                {
-                    "role": "system",
-                    "content": "请用自然的口语朗读以下内容，不要添加额外解释。",
-                },
-                {"role": "user", "content": body.text},
-            ]
-            # DashScope 音频参数
-            voice_name = body.voice or settings.omni_voice
-            audio_param = {"voice": voice_name, "format": settings.omni_audio_format}
-            stream = await client.chat.completions.create(
-                model=settings.omni_model,
-                messages=messages,
-                modalities=["text", "audio"],
-                audio=audio_param,
-                stream=True,
-            )
-            async for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                audio_b64 = None
-                if hasattr(delta, "audio") and delta.audio:
-                    audio_b64 = (
-                        delta.audio.get("data")
-                        if isinstance(delta.audio, dict)
-                        else None
-                    )
-                if audio_b64:
-                    from app.services.omni_client import _resample_pcm16_base64
-                    audio_b64 = _resample_pcm16_base64(
-                        audio_b64,
-                        settings.dashscope_audio_sample_rate,
-                        settings.output_sample_rate,
-                    )
-                    yield _sse("assistant_audio", {"data": audio_b64})
-            yield _sse("done", {})
-        except Exception as e:
-            yield _sse("error", {"message": str(e)})
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
