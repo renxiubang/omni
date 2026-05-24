@@ -88,11 +88,12 @@ export async function streamChat(
   sessionId: string,
   message: string,
   onEvent: SseHandler,
+  voiceEnabled: boolean = true,
 ) {
   const res = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, message }),
+    body: JSON.stringify({ session_id: sessionId, message, voice_enabled: voiceEnabled }),
   });
   if (!res.ok) throw new Error(await res.text());
   await consumeSse(res, onEvent);
@@ -103,10 +104,12 @@ export async function streamVoice(
   blob: Blob,
   filename: string,
   onEvent: SseHandler,
+  voiceEnabled: boolean = true,
 ) {
   const form = new FormData();
   form.append("session_id", sessionId);
   form.append("audio", blob, filename);
+  form.append("voice_enabled", String(voiceEnabled));
   const res = await fetch(`${API_BASE}/api/chat/voice`, {
     method: "POST",
     body: form,

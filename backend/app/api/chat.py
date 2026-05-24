@@ -41,12 +41,17 @@ async def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
         messages = omni_client.build_messages(session.messages)
         full: list[str] = []
         try:
-            async for text_delta, audio_b64 in omni_client.stream_call(messages):
-                if text_delta:
+            if body.voice_enabled:
+                async for text_delta, audio_b64 in omni_client.stream_call(messages):
+                    if text_delta:
+                        full.append(text_delta)
+                        yield _sse("token", {"delta": text_delta})
+                    if audio_b64:
+                        yield _sse("assistant_audio", {"data": audio_b64, "sample_rate": settings.output_sample_rate})
+            else:
+                async for text_delta in omni_client.stream_text(messages):
                     full.append(text_delta)
                     yield _sse("token", {"delta": text_delta})
-                if audio_b64:
-                    yield _sse("assistant_audio", {"data": audio_b64, "sample_rate": settings.output_sample_rate})
             assistant = session_store.add_message(
                 body.session_id,
                 role="assistant",

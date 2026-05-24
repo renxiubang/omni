@@ -11,6 +11,7 @@ class SessionOut(BaseModel):
 class ChatStreamRequest(BaseModel):
     session_id: str
     message: str = Field(min_length=1, max_length=8000)
+    voice_enabled: bool = True
 
 
 class MessageOut(BaseModel):

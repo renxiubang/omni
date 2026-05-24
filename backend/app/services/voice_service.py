@@ -24,6 +24,7 @@ async def process_voice_turn(
     audio_bytes: bytes,
     audio_format: str = "wav",
     source: str = "call",
+    voice_enabled: bool = True,
 ) -> AsyncIterator[VoiceEvent]:
     """处理一个语音轮次，流式返回 VoiceEvent。
 
@@ -51,16 +52,21 @@ async def process_voice_turn(
     full_text: list[str] = []
 
     try:
-        async for text_delta, audio_b64 in omni_client.stream_call(messages):
-            if text_delta:
+        if voice_enabled:
+            async for text_delta, audio_b64 in omni_client.stream_call(messages):
+                if text_delta:
+                    full_text.append(text_delta)
+                    yield VoiceEvent(kind="token", delta=text_delta)
+                if audio_b64:
+                    yield VoiceEvent(
+                        kind="audio",
+                        audio_b64=audio_b64,
+                        sample_rate=settings.output_sample_rate,
+                    )
+        else:
+            async for text_delta in omni_client.stream_text(messages):
                 full_text.append(text_delta)
                 yield VoiceEvent(kind="token", delta=text_delta)
-            if audio_b64:
-                yield VoiceEvent(
-                    kind="audio",
-                    audio_b64=audio_b64,
-                    sample_rate=settings.output_sample_rate,
-                )
     except Exception as e:
         yield VoiceEvent(kind="error", error=str(e))
         return

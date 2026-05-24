@@ -54,6 +54,7 @@ async def speech_to_text(
 async def chat_voice(
     session_id: str = Form(...),
     audio: UploadFile = File(...),
+    voice_enabled: bool = Form(default=True),
 ) -> StreamingResponse:
     session = session_store.get(session_id)
     if not session:
@@ -68,7 +69,8 @@ async def chat_voice(
 
     async def generate():
         async for ev in process_voice_turn(
-            session_id, audio_bytes, audio_format=normalize_fmt, source="voice"
+            session_id, audio_bytes, audio_format=normalize_fmt, source="voice",
+            voice_enabled=voice_enabled,
         ):
             match ev.kind:
                 case "user_final":

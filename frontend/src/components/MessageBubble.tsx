@@ -65,7 +65,9 @@ export function MessageBubble({
   const dur = message.duration ?? 0;
 
   /** 是否显示智能体语音条：有音频 或 正在流式播放 或 有收集中的流式数据 */
-  const showAssistantVoice = isAssistant && (hasAudio || isStreamingPlaying || hasStreamingData);
+  const showAudio = isAssistant && (hasAudio || isStreamingPlaying || hasStreamingData);
+  /** 是否显示智能体顶栏：有音频 或 有翻译功能（始终对 assistant 开放翻译） */
+  const showAssistantBar = isAssistant && (showAudio || !!onToggleTranslation);
 
   // 通话记录消息：居中胶囊样式
   if (isCallRecord) {
@@ -89,23 +91,25 @@ export function MessageBubble({
         } ${isVoice && hasAudio ? "cursor-pointer active:opacity-80" : ""}`}
         onClick={(isVoice && hasAudio) ? onPlayVoice : undefined}
       >
-        {/* 智能体消息的语音条 — 在文字内容上方，独立可点击 */}
-        {showAssistantVoice && (
+        {/* 智能体消息的顶栏 — 语音控件（有音频时） + 翻译按钮（始终） */}
+        {showAssistantBar && (
           <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[#e5e5e5]">
-            <div
-              className="flex items-center gap-2 flex-1 cursor-pointer active:opacity-80"
-              onClick={onPlayVoice}
-            >
-              <span className="text-[11px] text-[#999] select-none min-w-[70px]">
-                {isStreamingPlaying && "⬤ 正在播放"}
-                {!isStreamingPlaying && (isPlaying ? "⬤ 播放中" : "▶ 点击播放语音")}
-              </span>
-              <VoiceWave
-                color={isStreamingPlaying || isPlaying ? "#07c160" : "#bbb"}
-                animating={isStreamingPlaying || isPlaying}
-              />
-            </div>
-            {/* 翻译按钮 */}
+            {showAudio && (
+              <div
+                className="flex items-center gap-2 flex-1 cursor-pointer active:opacity-80"
+                onClick={onPlayVoice}
+              >
+                <span className="text-[11px] text-[#999] select-none min-w-[70px]">
+                  {isStreamingPlaying && "⬤ 正在播放"}
+                  {!isStreamingPlaying && (isPlaying ? "⬤ 播放中" : "▶ 点击播放语音")}
+                </span>
+                <VoiceWave
+                  color={isStreamingPlaying || isPlaying ? "#07c160" : "#bbb"}
+                  animating={isStreamingPlaying || isPlaying}
+                />
+              </div>
+            )}
+            {/* 翻译按钮 — 无论有无音频始终可见 */}
             {onToggleTranslation && (
               <button
                 onClick={(e) => {

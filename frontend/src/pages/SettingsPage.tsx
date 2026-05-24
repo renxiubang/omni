@@ -7,6 +7,7 @@ import type { PersonaInfo } from "../api/client";
 const STORAGE_KEY = "omni_speech_rate";
 const DEFAULT_RATE = 1.0;
 const STORAGE_KEY_TRAINING = "omni_wordbook_training";
+const STORAGE_KEY_VOICE_DISABLED = "omni_voice_disabled";
 
 function loadRate(): number {
   try {
@@ -43,6 +44,9 @@ export function SettingsDrawer({ visible, onClose, personas, selectedPersona, on
   const [rate, setRate] = useState(loadRate);
   const [wordbookTraining, setWordbookTraining] = useState(
     () => localStorage.getItem(STORAGE_KEY_TRAINING) === "true",
+  );
+  const [voiceDisabled, setVoiceDisabled] = useState(
+    () => localStorage.getItem(STORAGE_KEY_VOICE_DISABLED) === "true",
   );
   const { logout, currentUser } = useAuth();
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -187,6 +191,26 @@ export function SettingsDrawer({ visible, onClose, personas, selectedPersona, on
           </label>
           <p className="text-[12px] text-[#999] mt-2 leading-relaxed">
             开启后，AI 输出的语音和文本将仅限基础词汇和您的单词本
+          </p>
+        </div>
+
+        {/* 屏蔽语音输出 */}
+        <div className="mx-3 mt-3 bg-white rounded-lg p-4">
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-[15px] text-[#111]">仅文字对话</span>
+            <input
+              type="checkbox"
+              className="w-5 h-5 rounded accent-[#07c160] cursor-pointer"
+              checked={voiceDisabled}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setVoiceDisabled(v);
+                localStorage.setItem(STORAGE_KEY_VOICE_DISABLED, String(v));
+              }}
+            />
+          </label>
+          <p className="text-[12px] text-[#999] mt-2 leading-relaxed">
+            开启后，不输出语音，仅显示文字
           </p>
         </div>
 

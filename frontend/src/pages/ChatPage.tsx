@@ -40,6 +40,8 @@ export function ChatPage() {
     } catch {}
     return 1.0;
   };
+  /** 语音输出是否启用 */
+  const isVoiceEnabled = () => localStorage.getItem("omni_voice_disabled") !== "true";
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
@@ -412,7 +414,8 @@ export function ChatPage() {
           }
           const id = `asst-${Date.now()}`;
           assistantIdRef.current = id;
-          setStreamingAudioId(id); // 立即显示语音条
+          // 语音启用时才显示语音条
+          if (isVoiceEnabled()) setStreamingAudioId(id);
           return [
             ...prev,
             {
@@ -426,6 +429,7 @@ export function ChatPage() {
         });
       }
       if (event === "assistant_audio") {
+        if (!isVoiceEnabled()) return; // 语音已禁用
         const sampleRate = Number(data.sample_rate) || outputSampleRateRef.current;
         // AI 开始流式输出时，停止正在播放的 WAV（用户/AI 已完成语音）
         if (activeAudioRef.current) {
@@ -616,6 +620,7 @@ export function ChatPage() {
         sessionId,
         text,
         handleSse,
+        isVoiceEnabled(),
       ),
     );
   };
@@ -714,6 +719,7 @@ export function ChatPage() {
           blob,
           ext,
           handleSse,
+          isVoiceEnabled(),
         ),
       );
       rec.stream.getTracks().forEach((t) => t.stop());
