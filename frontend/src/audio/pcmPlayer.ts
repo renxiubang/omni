@@ -4,10 +4,8 @@ export class PcmPlayer {
   private muted = false;
   /** 播放速率，默认 1.0，范围 0.5~2.0 */
   private rate = 1.0;
-  /** 待播放的音频缓冲队列 */
-  private pending: AudioBuffer[] = [];
-  /** 是否正在播放（防止重复触发 playNext） */
-  private playing = false;
+  /** 下一个 source 应该开始播放的绝对时间（ctx.currentTime），0 表示未调度 */
+  private nextStartTime = 0;
   /** 当前正在播放的 source 列表（用于 stop） */
   private activeSources: AudioBufferSourceNode[] = [];
   /** 音频块序号，用于日志追踪 */
@@ -76,15 +74,15 @@ export class PcmPlayer {
     return this.ctx;
   }
 
-  /** 等待所有已入队的音频播放完毕 */
+  /** 等待所有已调度的音频播放完毕 */
   waitForFinish(): Promise<void> {
-    this.log(`waitForFinish pending=${this.pending.length} active=${this.activeSources.length}`);
-    if (this.pending.length === 0 && this.activeSources.length === 0) {
+    this.log(`waitForFinish active=${this.activeSources.length}`);
+    if (this.activeSources.length === 0) {
       return Promise.resolve();
     }
     return new Promise((resolve) => {
       const check = () => {
-        if (this.pending.length === 0 && this.activeSources.length === 0) {
+        if (this.activeSources.length === 0) {
           this.log(`waitForFinish 完成`);
           resolve();
         } else {
@@ -95,6 +93,10 @@ export class PcmPlayer {
     });
   }
 
+  /**
+   * 接收 base64 编码的 PCM16 音频块并添加调度播放。
+   * 核心改进：使用 source.start(preciseTime) 精确调度，消除块间间隙（杂音根因）。
+   */
   async enqueuePcm16Base64(b64: string, sampleRate = 16000): Promise<void> {
     this.seq++;
     const mySeq = this.seq;
@@ -105,8 +107,6 @@ export class PcmPlayer {
       return;
     }
 
-    // 采样率不匹配时不再重建 AudioContext，只用数据的采样率创建 buffer
-    // Web Audio API 会自动重新采样到 AudioContext 的设备采样率
     const useSr = sampleRate;
     if (sampleRate !== this.sampleRate) {
       this.log(`  #${mySeq} 采样率不匹配 data=${sampleRate} stored=${this.sampleRate}，使用dataRate创建buffer`);
@@ -133,7 +133,6 @@ export class PcmPlayer {
       this.log(`  #${mySeq} rawHex前${peekLen}字节: ${hexParts.join(' ')}`);
     }
 
-    // 修复：正确使用 byteOffset 和长度
     const samples = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length / 2);
     this.log(`  #${mySeq} Int16Array length=${samples.length} byteOffset=${bytes.byteOffset} byteLength=${samples.byteLength}`);
 
@@ -150,7 +149,7 @@ export class PcmPlayer {
         sumSq += samples[i] * samples[i];
       }
       const rms = Math.sqrt(sumSq / samples.length);
-      this.log(`  #${mySeq} PCM样本 peek[0..${peekCount-1}]=${peekVals.join(',')} min=${minVal} max=${maxVal} rms=${rms.toFixed(1)}`);
+      this.log(`  #${mySeq} PCM样本 peek[0..${peekCount - 1}]=${peekVals.join(',')} min=${minVal} max=${maxVal} rms=${rms.toFixed(1)}`);
     }
 
     const floats = new Float32Array(samples.length);
@@ -182,81 +181,47 @@ export class PcmPlayer {
         if (verifyCh[i] < vmin) vmin = verifyCh[i];
         if (verifyCh[i] > vmax) vmax = verifyCh[i];
       }
-      this.log(`  #${mySeq} buffer验证 peek=${vvals.map(v=>v.toFixed(4)).join(',')} 范围=[${vmin.toFixed(4)},${vmax.toFixed(4)}] duration=${buffer.duration.toFixed(3)}s samples=${floats.length}`);
+      this.log(`  #${mySeq} buffer验证 peek=${vvals.map(v => v.toFixed(4)).join(',')} 范围=[${vmin.toFixed(4)},${vmax.toFixed(4)}] duration=${buffer.duration.toFixed(3)}s samples=${floats.length}`);
     }
 
-    // 入队，由 playNext 按顺序逐个播放
-    this.pending.push(buffer);
-    this.log(`  #${mySeq} 入队 pending队列长度=${this.pending.length} playing=${this.playing}`);
-    if (!this.playing) {
-      this.log(`  #${mySeq} 触发playNext(ctx)`);
-      this.playNext(ctx, mySeq);
-    }
-  }
+    // === 核心改动：精确时间调度 ===
+    // 计算这个 chunk 应该从哪个时间点开始
+    const now = ctx.currentTime;
+    const effectiveStart = Math.max(this.nextStartTime, now);
+    const chunkDuration = buffer.duration / this.rate;
 
-  /** 从队列取出下一个缓冲并播放，onended 时递归调用自身 */
-  private playNext(ctx: AudioContext, triggerSeq: number) {
-    this.log(`playNext 触发者=#${triggerSeq} pending长度=${this.pending.length} ctx.state=${ctx.state} ctx.currentTime=${ctx.currentTime} ctx.sampleRate=${ctx.sampleRate} destMaxCh=${ctx.destination.maxChannelCount}`);
-    const buffer = this.pending.shift();
-    if (!buffer) {
-      this.log(`  playNext pending为空 设置playing=false`);
-      this.playing = false;
-      // 播放结束，触发回调
-      if (this.playbackStarted && this.activeSources.length === 0) {
-        this.playbackStarted = false;
-        this.onPlaybackEnd?.();
-      }
-      return;
-    }
-    this.playing = true;
-    
-    // 第一次开始播放时触发 onPlaybackStart
-    if (!this.playbackStarted) {
-      this.playbackStarted = true;
-      this.onPlaybackStart?.();
-    }
+    this.log(`  #${mySeq} 调度: nextStartTime=${this.nextStartTime.toFixed(4)} now=${now.toFixed(4)} effectiveStart=${effectiveStart.toFixed(4)} chunkDuration=${chunkDuration.toFixed(4)}s`);
 
-    // 验证 buffer 在 playNext 阶段
-    const ch = buffer.getChannelData(0);
-    let minVal = 1.0, maxVal = -1.0, sumAbs = 0;
-    for (let i = 0; i < ch.length; i++) {
-      if (ch[i] < minVal) minVal = ch[i];
-      if (ch[i] > maxVal) maxVal = ch[i];
-      sumAbs += Math.abs(ch[i]);
-    }
-    const meanAbs = sumAbs / ch.length;
-    this.log(`  playNext buffer内容: duration=${buffer.duration.toFixed(3)}s sr=${buffer.sampleRate} ch=${buffer.numberOfChannels} len=${buffer.length} 范围=[${minVal.toFixed(4)},${maxVal.toFixed(4)}] meanAbs=${meanAbs.toFixed(6)}`);
-
+    // 创建 source 并精确调度 start 时间
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.playbackRate.value = this.rate;
     source.connect(ctx.destination);
 
     const sourceId = this.activeSources.length;
-    this.log(`  playNext 创建source#${sourceId} duration=${buffer.duration.toFixed(3)}s rate=${this.rate} ctx.state=${ctx.state}`);
+    this.log(`  #${mySeq} 创建source#${sourceId} startAt=${effectiveStart.toFixed(4)}s`);
 
-    this.activeSources.push(source);
     source.onended = () => {
-      const endedAt = ctx.currentTime;
-      this.log(`  source#${sourceId} onended at ${endedAt.toFixed(3)}s activeSources剩余=${this.activeSources.length - 1}`);
+      this.log(`  source#${sourceId} onended activeSources剩余=${this.activeSources.length - 1}`);
       this.activeSources = this.activeSources.filter((s) => s !== source);
-      this.playNext(ctx, -1);
+      this.checkIdle();
     };
+    this.activeSources.push(source);
+
+    // 更新 nextStartTime 为这个 chunk 结束后的时间点
+    this.nextStartTime = effectiveStart + chunkDuration;
 
     const doStart = () => {
-      const startTime = ctx.currentTime;
-      this.log(`  source#${sourceId}.start() 调用... ctx.currentTime=${startTime.toFixed(4)}`);
       try {
-        source.start(); // 无参数 = 立即播放，等价于 start(ctx.currentTime)
-        this.log(`  source#${sourceId}.start() 成功 activeSources=${this.activeSources.length} 预计${startTime.toFixed(3)}→${(startTime+buffer.duration).toFixed(3)}s`);
+        source.start(effectiveStart); // ← 精确时间调度，消除块间间隙
+        this.log(`  source#${sourceId}.start(${effectiveStart.toFixed(4)}) 成功 预计${effectiveStart.toFixed(3)}→${(effectiveStart + chunkDuration).toFixed(3)}s`);
       } catch (e) {
         this.log(`  source#${sourceId}.start() 抛异常: ${e}`);
       }
     };
 
-    // 防御性检查：确保 context 处于 running 状态后再 start
     if (ctx.state === "suspended") {
-      this.log(`  playNext: ctx 为 suspended，await resume 后再 start`);
+      this.log(`  enqueue: ctx 为 suspended，await resume 后再 start`);
       ctx.resume().then(() => {
         this.log(`  resume 完成，state=${ctx.state}，调用 start()`);
         doStart();
@@ -264,11 +229,29 @@ export class PcmPlayer {
     } else {
       doStart();
     }
+
+    // 第一次播放时触发回调
+    if (!this.playbackStarted) {
+      this.playbackStarted = true;
+      this.onPlaybackStart?.();
+    }
+  }
+
+  /** 检查是否所有 source 都已结束，触发 idle 回调 */
+  private checkIdle() {
+    if (this.activeSources.length === 0) {
+      this.log(`checkIdle: 所有source已结束`);
+      this.nextStartTime = 0;
+      if (this.playbackStarted) {
+        this.playbackStarted = false;
+        this.onPlaybackEnd?.();
+      }
+    }
   }
 
   /** 是否正在播放音频 */
   isPlaying(): boolean {
-    return this.activeSources.length > 0 || this.pending.length > 0;
+    return this.activeSources.length > 0;
   }
 
   /** 静音：停止当前播放并阻止后续入队播放 */
@@ -290,15 +273,13 @@ export class PcmPlayer {
   }
 
   stop() {
-    this.log(`stop pending=${this.pending.length} active=${this.activeSources.length}`);
-    this.pending = [];
-    this.playing = false;
+    this.log(`stop active=${this.activeSources.length}`);
+    this.nextStartTime = 0;
     for (const src of this.activeSources) {
       try { src.stop(); } catch { /* ignore */ }
     }
     this.activeSources = [];
     
-    // 如果播放已经开始，触发结束回调
     if (this.playbackStarted) {
       this.playbackStarted = false;
       this.onPlaybackEnd?.();

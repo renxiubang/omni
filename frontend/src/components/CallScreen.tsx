@@ -121,7 +121,7 @@ export function CallScreen() {
   const sendUtterance = useCallback((int16Buffer: ArrayBuffer) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const wav = floatToWavBlob(int16Buffer, 16000);
+    const wav = floatToWavBlob(int16Buffer, 24000);
     wav.arrayBuffer().then((ab) => {
       // 分块处理避免展开操作符导致栈溢出
       const uint8 = new Uint8Array(ab);
