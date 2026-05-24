@@ -13,7 +13,7 @@ import {
 } from "../api/client";
 import { Composer } from "../components/Composer";
 import { MessageList } from "../components/MessageList";
-import { PcmPlayer } from "../audio/pcmPlayer";
+import { AudioManager } from "../audio/AudioManager";
 import { pcm16Base64ToWavBlob } from "../audio/pcmToWav";
 import { SettingsDrawer } from "./SettingsPage";
 import { Toast } from "../components/Toast";
@@ -54,16 +54,12 @@ export function ChatPage() {
   const chunksRef = useRef<Blob[]>([]);
   const recordingCancelledRef = useRef(false);
   const recordingStartRef = useRef(0);
-  const playerRef = useRef(new PcmPlayer());
   /** 存储语音消息的 object URL，用于点击回放 */
   const voiceAudioUrls = useRef<Map<string, string>>(new Map());
   const playingVoiceIdRef = useRef<string | null>(null);
-  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
   /** 收集 assistant 的 PCM base64 音频数据，done 时转为 WAV 存入 voiceAudioUrls */
   const assistantAudioChunksRef = useRef<Map<string, string[]>>(new Map());
   const assistantAudioSampleRateRef = useRef<Map<string, number>>(new Map());
-  /** 流式期间点击"从头播放"时创建的临时 WAV URL，用于释放 */
-  const tempWavUrlRef = useRef<string | null>(null);
   /** 后端配置的输出采样率 */
   const outputSampleRateRef = useRef(16000);
   /** 当前正在显示翻译的消息 ID */
@@ -166,7 +162,7 @@ export function ChatPage() {
         const range = document.caretRangeFromPoint(x, y);
         if (range && range.startContainer) {
           try {
-            range.expand('word');
+            (range as any).expand('word');
           } catch {
             // expand('word') 可能不被支持
           }
@@ -409,7 +405,7 @@ export function ChatPage() {
       }
       if (event === "assistant_audio") {
         const sampleRate = Number(data.sample_rate) || outputSampleRateRef.current;
-        await playerRef.current.enqueuePcm16Base64(String(data.data), sampleRate);
+        await AudioManager.getInstance().enqueuePcm16Base64(String(data.data), sampleRate);
         // 收集音频数据供回放
         const asstId = assistantIdRef.current;
         if (asstId) {
@@ -423,8 +419,8 @@ export function ChatPage() {
         const asstId = assistantIdRef.current;
         assistantIdRef.current = null;
         // 等所有已调度的音频播完再清除流式标记，避免语音条提前消失
-        if (asstId && playerRef.current.isPlaying()) {
-          void playerRef.current.waitForFinish().then(() => setStreamingAudioId(null));
+        if (asstId && AudioManager.getInstance().isPlaying()) {
+          void AudioManager.getInstance().waitForFinish().then(() => setStreamingAudioId(null));
         } else {
           setStreamingAudioId(null);
         }
@@ -515,16 +511,11 @@ export function ChatPage() {
     async (personaKey: string) => {
       setSelectedPersona(personaKey);
       // 停止当前播放
-      if (activeAudioRef.current) {
-        activeAudioRef.current.pause();
-        activeAudioRef.current = null;
-      }
+      AudioManager.getInstance().stopAll();
       playingVoiceIdRef.current = null;
       setPlayingVoiceId(null);
       setStreamingAudioId(null);
-      playerRef.current.stop();
-      playerRef.current = new PcmPlayer();
-      await playerRef.current.prepare(outputSampleRateRef.current);
+      await AudioManager.getInstance().prepare(outputSampleRateRef.current);
       // 释放旧 object URL
       voiceAudioUrls.current.forEach((url) => URL.revokeObjectURL(url));
       voiceAudioUrls.current.clear();
@@ -543,13 +534,12 @@ export function ChatPage() {
       if (!sessionId || busy) return;
       setBusy(true);
       assistantIdRef.current = null;
-      // 停止上一次播放并重置播放器
-      playerRef.current.stop();
-      playerRef.current = new PcmPlayer();
+      // 停止上一次播放
+      AudioManager.getInstance().stopAll();
       // 在用户手势中提前激活 AudioContext，await 确保 resume 完成
-      await playerRef.current.prepare(outputSampleRateRef.current);
+      await AudioManager.getInstance().prepare(outputSampleRateRef.current);
       // 应用保存的语速
-      playerRef.current.setPlaybackRate(getSavedRate());
+      AudioManager.getInstance().setPlaybackRate(getSavedRate());
       try {
         await fn();
       } catch (e) {
@@ -697,8 +687,9 @@ export function ChatPage() {
   /** 点击语音条播放 / 暂停 */
   const handlePlayVoice = useCallback((msgId: string) => {
     // 场景 A：正在流式播放中 → 中止播放（不影响语音合成，继续收集 PCM 数据）
+    // 场景 A：正在流式播放中 → 静音（不影响语音合成，继续收集 PCM 数据）
     if (streamingAudioId === msgId) {
-      playerRef.current.mute();
+      AudioManager.getInstance().muteStreamingAndKeepData();
       setStreamingAudioId(null);
       return;
     }
@@ -707,54 +698,21 @@ export function ChatPage() {
     if (assistantAudioChunksRef.current.has(msgId)) {
       const chunks = assistantAudioChunksRef.current.get(msgId)!;
       if (chunks.length > 0) {
-        // 释放旧的临时 WAV URL
-        if (tempWavUrlRef.current) {
-          URL.revokeObjectURL(tempWavUrlRef.current);
-          tempWavUrlRef.current = null;
-        }
-
         const sr = assistantAudioSampleRateRef.current.get(msgId) || outputSampleRateRef.current;
         const wavBlob = pcm16Base64ToWavBlob(chunks, sr);
         const url = URL.createObjectURL(wavBlob);
-        tempWavUrlRef.current = url;
 
-        if (activeAudioRef.current) {
-          activeAudioRef.current.pause();
-          activeAudioRef.current = null;
-        }
-
-        const audio = new Audio(url);
-        audio.playbackRate = getSavedRate();
-        audio.onended = () => {
+        const onEnd = () => {
           if (playingVoiceIdRef.current === msgId) {
             playingVoiceIdRef.current = null;
             setPlayingVoiceId(null);
           }
-          activeAudioRef.current = null;
           URL.revokeObjectURL(url);
-          tempWavUrlRef.current = null;
         };
-        audio.onerror = () => {
-          if (playingVoiceIdRef.current === msgId) {
-            playingVoiceIdRef.current = null;
-            setPlayingVoiceId(null);
-          }
-          activeAudioRef.current = null;
-          URL.revokeObjectURL(url);
-          tempWavUrlRef.current = null;
-        };
-        activeAudioRef.current = audio;
+
+        AudioManager.getInstance().playPlayback(url, onEnd);
         playingVoiceIdRef.current = msgId;
         setPlayingVoiceId(msgId);
-        audio.play().catch(() => {
-          if (playingVoiceIdRef.current === msgId) {
-            playingVoiceIdRef.current = null;
-            setPlayingVoiceId(null);
-          }
-          activeAudioRef.current = null;
-          URL.revokeObjectURL(url);
-          tempWavUrlRef.current = null;
-        });
         return;
       }
     }
@@ -764,41 +722,21 @@ export function ChatPage() {
     if (!url) return;
 
     // 再次点击同一条：暂停
-    if (playingVoiceIdRef.current === msgId && activeAudioRef.current) {
-      activeAudioRef.current.pause();
-      activeAudioRef.current.currentTime = 0;
-      activeAudioRef.current = null;
+    if (playingVoiceIdRef.current === msgId && AudioManager.getInstance().getPlaybackAudio()) {
+      AudioManager.getInstance().stopPlaybackWithCallback();
       playingVoiceIdRef.current = null;
       setPlayingVoiceId(null);
       return;
     }
 
-    // 停止正在播放的
-    if (activeAudioRef.current) {
-      activeAudioRef.current.pause();
-      activeAudioRef.current = null;
-    }
+    const onEnd = () => {
+      playingVoiceIdRef.current = null;
+      setPlayingVoiceId(null);
+    };
 
-    const audio = new Audio(url);
-    audio.playbackRate = getSavedRate();
-    audio.onended = () => {
-      playingVoiceIdRef.current = null;
-      setPlayingVoiceId(null);
-      activeAudioRef.current = null;
-    };
-    audio.onerror = () => {
-      playingVoiceIdRef.current = null;
-      setPlayingVoiceId(null);
-      activeAudioRef.current = null;
-    };
-    activeAudioRef.current = audio;
+    AudioManager.getInstance().playPlayback(url, onEnd);
     playingVoiceIdRef.current = msgId;
     setPlayingVoiceId(msgId);
-    audio.play().catch(() => {
-      playingVoiceIdRef.current = null;
-      setPlayingVoiceId(null);
-      activeAudioRef.current = null;
-    });
   }, [streamingAudioId]);
 
   /** 切换翻译显示 */
@@ -857,16 +795,13 @@ export function ChatPage() {
   /** 有未完成的流式音频数据的消息 ID 集合（用于保持语音条可见，即使 streamingAudioId 已清除） */
   const streamingDataIds = new Set(assistantAudioChunksRef.current.keys());
 
-  // 组件卸载时释放所有 object URL
+  // 组件卸载时释放所有 object URL 并释放 AudioManager
   useEffect(() => {
     const map = voiceAudioUrls.current;
     return () => {
       map.forEach((url) => URL.revokeObjectURL(url));
       map.clear();
-      if (tempWavUrlRef.current) {
-        URL.revokeObjectURL(tempWavUrlRef.current);
-        tempWavUrlRef.current = null;
-      }
+      AudioManager.releaseInstance();
     };
   }, []);
 
