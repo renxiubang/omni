@@ -123,8 +123,18 @@ export function CallScreen() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const wav = floatToWavBlob(int16Buffer, 16000);
     wav.arrayBuffer().then((ab) => {
-      const b64 = btoa(String.fromCharCode(...new Uint8Array(ab)));
+      // 分块处理避免展开操作符导致栈溢出
+      const uint8 = new Uint8Array(ab);
+      let binary = '';
+      const chunkSize = 8192;
+      for (let i = 0; i < uint8.length; i += chunkSize) {
+        const chunkEnd = Math.min(i + chunkSize, uint8.length);
+        binary += String.fromCharCode.apply(null, new Uint8Array(ab, i, chunkEnd - i));
+      }
+      const b64 = btoa(binary);
       ws.send(JSON.stringify({ type: "utterance_end", data: b64 }));
+    }).catch((err) => {
+      console.error("CallScreen: Failed to process utterance:", err);
     });
   }, []);
 
