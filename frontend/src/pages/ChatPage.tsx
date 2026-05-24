@@ -103,42 +103,230 @@ export function ChatPage() {
     };
   }, []);
 
-  // 监听文本选中事件（单词解释功能）
+  // 单词选择功能：桌面端 mouseup + 移动端长按选择
   useEffect(() => {
-    const handleMouseUp = () => {
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed) {
-        setSelectedWord(null);
-        return;
-      }
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-      const selectedText = selection.toString().trim();
-      if (!selectedText) {
-        setSelectedWord(null);
-        return;
-      }
+    /** 从选中文本提取单词并显示浮框 */
+    const processSelection = () => {
+      // 移动端需要延迟一点，等待系统选择完成
+      const delay = isMobile ? 100 : 0;
+      setTimeout(() => {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed) {
+          setSelectedWord(null);
+          return;
+        }
 
-      // 检查是否为英文文本
-      if (!/^[a-zA-Z\s\-']+$/.test(selectedText)) {
-        setSelectedWord(null);
-        return;
-      }
+        const selectedText = selection.toString().trim();
+        if (!selectedText) {
+          setSelectedWord(null);
+          return;
+        }
 
-      // 获取选中文本的位置
-      const range = selection.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
+        // 检查是否为英文文本
+        if (!/^[a-zA-Z\s\-']+$/.test(selectedText)) {
+          setSelectedWord(null);
+          return;
+        }
 
-      // 设置浮框位置（在选中文本上方）
-      setPopupPosition({
-        x: rect.left + window.scrollX,
-        y: rect.top + window.scrollY - 10
-      });
+        // 获取选中文本的位置
+        const range = selection.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
 
-      setSelectedWord(selectedText);
+        setPopupPosition({
+          x: rect.left + window.scrollX,
+          y: rect.top + window.scrollY - 10
+        });
+
+        setSelectedWord(selectedText);
+      }, delay);
     };
 
-    document.addEventListener('mouseup', handleMouseUp);
-    return () => document.removeEventListener('mouseup', handleMouseUp);
+    // ---- 桌面端：使用 mouseup 事件 ----
+    if (!isMobile) {
+      document.addEventListener('mouseup', processSelection);
+      return () => document.removeEventListener('mouseup', processSelection);
+    }
+
+    // ============================================================
+    // 移动端：禁用默认选择 + 长按触发单词选择
+    // ============================================================
+
+    let touchTimer: ReturnType<typeof setTimeout> | null = null;
+    let touchStartX = 0;
+    let touchStartY = 0;
+    const LONG_PRESS_MS = 500;
+    const MOVE_THRESHOLD = 10;
+
+    /** 使用 caretRangeFromPoint 获取触摸点处的单词 */
+    const getWordAtPoint = (x: number, y: number): string | null => {
+      // 方法1：WebKit caretRangeFromPoint（最精准）
+      if (document.caretRangeFromPoint) {
+        const range = document.caretRangeFromPoint(x, y);
+        if (range && range.startContainer) {
+          try {
+            range.expand('word');
+          } catch {
+            // expand('word') 可能不被支持
+          }
+          const text = range.toString().trim();
+          if (/^[a-zA-Z\s\-']+$/.test(text) && /[a-zA-Z]/.test(text)) {
+            return text;
+          }
+        }
+      }
+
+      // 方法2：elementFromPoint 回退 — 手动从文本节点提取单词
+      const el = document.elementFromPoint(x, y);
+      if (!el) return null;
+      // 获取元素下所有文本
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let allText = '';
+      const textNodes: Text[] = [];
+      let node: Text | null;
+      while ((node = walker.nextNode() as Text | null)) {
+        textNodes.push(node);
+        allText += node.textContent || '';
+      }
+      if (!allText.trim()) return null;
+
+      // 计算触摸点在整体文本中的字符偏移
+      const range = document.createRange();
+      let offset = 0;
+      for (const tn of textNodes) {
+        const len = (tn.textContent || '').length;
+        range.setStart(tn, 0);
+        range.setEnd(tn, len);
+        const rects = range.getClientRects();
+        for (let r = 0; r < rects.length; r++) {
+          const rect = rects[r];
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            // 在该文本节点中找到大致字符位置
+            const charWidth = rect.width / Math.max(len, 1);
+            const charIndex = Math.floor((x - rect.left) / charWidth);
+            const globalOffset = offset + Math.min(Math.max(charIndex, 0), len);
+            // 从该位置向两侧扩展到单词边界
+            let start = globalOffset;
+            let end = globalOffset;
+            while (start > 0 && /[a-zA-Z\-']/.test(allText[start - 1])) start--;
+            while (end < allText.length && /[a-zA-Z\-']/.test(allText[end])) end++;
+            const word = allText.slice(start, end).trim();
+            if (word && /^[a-zA-Z\-']+$/.test(word)) return word;
+          }
+        }
+        offset += len;
+      }
+      return null;
+    };
+
+    /** 检查触摸点是否在消息气泡内 */
+    const isInsideMessage = (el: EventTarget | null): boolean => {
+      if (!el || !(el instanceof HTMLElement)) return false;
+      let current: HTMLElement | null = el;
+      while (current) {
+        if (current.hasAttribute('data-message-content')) return true;
+        if (
+          current.classList.contains('max-w-[75%]') &&
+          (current.classList.contains('bg-[#95ec69]') ||
+            current.classList.contains('bg-white'))
+        ) {
+          return true;
+        }
+        current = current.parentElement;
+      }
+      return false;
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      const touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+
+      if (!isInsideMessage(e.target)) return;
+
+      touchTimer = setTimeout(() => {
+        // 长按触发：查找触摸点处的单词
+        const word = getWordAtPoint(touchStartX, touchStartY);
+        if (word) {
+          setPopupPosition({
+            x: touchStartX + window.scrollX,
+            y: touchStartY + window.scrollY - 10,
+          });
+          setSelectedWord(word);
+        }
+      }, LONG_PRESS_MS);
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!touchTimer) return;
+      const touch = e.touches[0];
+      const deltaX = Math.abs(touch.clientX - touchStartX);
+      const deltaY = Math.abs(touch.clientY - touchStartY);
+      if (deltaX > MOVE_THRESHOLD || deltaY > MOVE_THRESHOLD) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    };
+
+    // 辅助：当用户通过系统手势（双击选词等）选中文本时触发弹窗
+    let selectionDebounce: ReturnType<typeof setTimeout> | null = null;
+    const handleSelectionChange = () => {
+      if (selectionDebounce) clearTimeout(selectionDebounce);
+      selectionDebounce = setTimeout(() => {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed) {
+          return;
+        }
+        const selectedText = selection.toString().trim();
+        if (!selectedText || !/^[a-zA-Z\s\-']+$/.test(selectedText)) {
+          return;
+        }
+        const range = selection.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        setPopupPosition({
+          x: rect.left + window.scrollX,
+          y: rect.top + window.scrollY - 10,
+        });
+        setSelectedWord(selectedText);
+        // 清除选中状态，避免系统菜单闪现
+        selection.removeAllRanges();
+      }, 200);
+    };
+
+    // 注入样式：仅禁用系统长按菜单，保留文本可选状态（caretRangeFromPoint 需要可选文本）
+    const styleEl = document.createElement('style');
+    styleEl.id = 'omni-mobile-selection';
+    styleEl.textContent = `
+      [data-message-content] {
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+    `;
+    document.head.appendChild(styleEl);
+
+    document.addEventListener('touchstart', handleTouchStart, { passive: false });
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchEnd);
+    document.addEventListener('selectionchange', handleSelectionChange);
+
+    return () => {
+      document.removeEventListener('touchstart', handleTouchStart);
+      document.removeEventListener('touchmove', handleTouchMove);
+      document.removeEventListener('touchend', handleTouchEnd);
+      document.removeEventListener('selectionchange', handleSelectionChange);
+      // 清理注入的样式
+      if (styleEl.parentNode) {
+        styleEl.parentNode.removeChild(styleEl);
+      }
+    };
   }, []);
 
   // 从路由 state 读取通话时长，挂断后显示通话记录

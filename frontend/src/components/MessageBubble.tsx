@@ -81,6 +81,7 @@ export function MessageBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3 px-3`}>
       <div
+        data-message-content="true"
         className={`max-w-[75%] rounded-lg px-3 py-2 text-[15px] leading-relaxed shadow-sm ${
           isUser
             ? "bg-[#95ec69] text-[#111]"
