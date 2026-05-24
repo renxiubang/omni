@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { callWsUrl, fetchConfig } from "../api/client";
-import { AudioManager } from "../audio/AudioManager";
+import { PcmPlayer } from "../audio/pcmPlayer";
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -46,6 +46,7 @@ export function CallScreen() {
   const [assistantLine, setAssistantLine] = useState("");
   const [subtitleList, setSubtitleList] = useState<{ role: "user" | "assistant"; text: string }[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
+  const playerRef = useRef(new PcmPlayer());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const subtitleRef = useRef<HTMLDivElement>(null);
   // 防止回声反馈：AI 说话时忽略 VAD 检测
@@ -67,23 +68,26 @@ export function CallScreen() {
 
   // 设置播放器回调：AI播放开始时禁用麦克风，播放结束后恢复
   const setupPlayerCallbacks = useCallback(() => {
+    const player = playerRef.current;
     const stream = micStreamRef.current;
-    if (!stream) return;
-
+    
+    if (!player || !stream) return;
+    
     const micTrack = stream.getAudioTracks()[0];
     if (!micTrack) return;
-
-    const mgr = AudioManager.getInstance();
-    mgr.onPlaybackStart = () => {
+    
+    player.onPlaybackStart = () => {
       console.log("[CallScreen] Playback started, disabling mic track");
       micTrack.enabled = false;
       agentTurnActive.current = true;
+      // 设置一个较长的忽略时间，实际会在播放结束时恢复
       ignoreVadUntil.current = Date.now() + 10000;
     };
-
-    mgr.onPlaybackEnd = () => {
+    
+    player.onPlaybackEnd = () => {
       console.log("[CallScreen] Playback ended, will re-enable mic track after delay");
       agentTurnActive.current = false;
+      // 延迟 500ms 后恢复麦克风，避免尾部回声
       setTimeout(() => {
         if (micTrack) {
           micTrack.enabled = true;
@@ -119,6 +123,7 @@ export function CallScreen() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const wav = floatToWavBlob(int16Buffer, 24000);
     wav.arrayBuffer().then((ab) => {
+      // 分块处理避免展开操作符导致栈溢出
       const uint8 = new Uint8Array(ab);
       let binary = '';
       for (let i = 0; i < uint8.length; i++) {
@@ -193,7 +198,7 @@ export function CallScreen() {
           }
           break;
         case "assistant_audio":
-          AudioManager.getInstance().enqueuePcm16Base64(msg.data, msg.sample_rate ?? 16000);
+          playerRef.current.enqueuePcm16Base64(msg.data, msg.sample_rate ?? 16000);
           // 标记AI开始说话，设置初始忽略时间（会被播放回调覆盖）
           if (!agentTurnActive.current) {
             agentTurnActive.current = true;
@@ -202,7 +207,10 @@ export function CallScreen() {
           }
           break;
         case "turn_cancelled":
-          AudioManager.getInstance().stopAll();
+          playerRef.current.stop();
+          playerRef.current = new PcmPlayer();
+          // 重新设置播放器回调
+          setupPlayerCallbacks();
           setAssistantLine("");
           agentTurnActive.current = false;
           ignoreVadUntil.current = 0;
@@ -254,7 +262,8 @@ export function CallScreen() {
               console.log("[CallScreen] Ignoring VAD during agent speech (echo prevention)");
               return;
             }
-            AudioManager.getInstance().stopAll();
+            playerRef.current.stop();
+            playerRef.current = new PcmPlayer();
             setAssistantLine("");
           }
           if (e.data.type === "utterance_end" && e.data.buffer) {
@@ -277,8 +286,7 @@ export function CallScreen() {
         ws.send(JSON.stringify({ type: "hangup" }));
       } catch { /* ignore */ }
       ws.close();
-      AudioManager.getInstance().stopAll();
-      AudioManager.releaseInstance();
+      playerRef.current.stop();
     };
   }, [sessionId, sendUtterance]);
 
