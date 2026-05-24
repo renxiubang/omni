@@ -35,7 +35,7 @@ export function VoicePrintEnroll({
   const {
     isRecording,
     audioBlob,
-    audioUrl,
+    audioUrl: _audioUrl,
     isPlaying,
     isLoading,
     error,

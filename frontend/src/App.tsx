@@ -1,5 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { CallScreen } from "./components/CallScreen";
+import { CallScreenWebRTC } from "./components/CallScreenWebRTC";
 import { ChatPage } from "./pages/ChatPage";
 import { LoginPage } from "./pages/LoginPage";
 import { WordbookPage } from "./pages/WordbookPage";
@@ -46,11 +46,12 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+          {/* WebRTC 通话路由（默认） */}
           <Route
             path="/call/:sessionId"
             element={
               <ProtectedRoute>
-                <CallScreen />
+                <CallScreenWebRTC />
               </ProtectedRoute>
             }
           />

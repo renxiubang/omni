@@ -36,7 +36,7 @@ interface SettingsDrawerProps {
 
 export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
   const [rate, setRate] = useState(loadRate);
-  const { logout, user } = useAuth();
+  const { logout, currentUser } = useAuth();
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showEnroll, setShowEnroll] = useState(false);
 
@@ -44,20 +44,20 @@ export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
   const {
     voiceProfiles,
     isLoading,
-    error,
+    error: _error,
     fetchVoiceProfiles,
     deleteVoiceProfile,
-  } = useVoicePrint(user?.id || 0);
+  } = useVoicePrint(currentUser?.id || 0);
 
   // 每次打开时从 localStorage 重新加载，并获取声纹档案列表
   useEffect(() => {
     if (visible) {
       setRate(loadRate());
-      if (user?.id) {
+      if (currentUser?.id) {
         fetchVoiceProfiles();
       }
     }
-  }, [visible, user?.id, fetchVoiceProfiles]);
+  }, [visible, currentUser?.id, fetchVoiceProfiles]);
 
   // 每次打开时从 localStorage 重新加载
   useEffect(() => {
@@ -243,9 +243,9 @@ export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
         </div>
 
         {/* 声纹录入组件 */}
-        {showEnroll && user?.id && (
+        {showEnroll && currentUser?.id && (
           <VoicePrintEnroll
-            userId={user.id}
+            userId={currentUser.id}
             onClose={() => {
               setShowEnroll(false);
               fetchVoiceProfiles();
