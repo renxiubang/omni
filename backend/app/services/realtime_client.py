@@ -54,6 +54,27 @@ class RealtimeAPIClient:
             async for message in self.ws:
                 data = json.loads(message)
                 msg_type = data.get("type", "")
+                
+                # 打印所有事件类型（用于调试）
+                # 特别处理 audio.delta，打印数据大小
+                if msg_type == "response.audio.delta":
+                    pcm_bytes = base64.b64decode(data["delta"])
+                    # 打印音频数据统计信息（判断是否为静音）
+                    import numpy as np
+                    pcm_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
+                    logger.info(f"🔊 Received audio delta: {len(pcm_bytes)} bytes, "
+                               f"mean={pcm_int16.mean():.2f}, std={pcm_int16.std():.2f}, "
+                               f"max={pcm_int16.max()}, min={pcm_int16.min()}, "
+                               f"zeros={np.sum(pcm_int16 == 0)}/{len(pcm_int16)}")
+                    # 检查是否为静音（标准差很小）
+                    if pcm_int16.std() < 10:
+                        logger.warning("⚠️ Audio data may be SILENCE (std < 10)")
+                elif msg_type == "response.text.delta":
+                    delta = data.get("delta", "")
+                    logger.debug(f"Received text delta: '{delta}'")
+                else:
+                    # 其他事件打印完整信息（截断到 300 字符）
+                    logger.info(f"Realtime API event: type={msg_type}, data={json.dumps(data)[:300]}")
 
                 if msg_type == "response.audio.delta":
                     # 解析 Base64 PCM 音频并推送到队列
@@ -64,27 +85,42 @@ class RealtimeAPIClient:
                     delta = data.get("delta", "")
                     await self.text_delta_queue.put(delta)
                 elif msg_type == "response.done":
-                    # 响应完成，发送结束标记
-                    await self.audio_queue.put(None)
-                    await self.text_delta_queue.put(None)
+                    # 响应完成（单次回复结束，但会话继续）
+                    # ⚠️ 不要发送 None！否则 QwenAudioTrack 会认为音频流已结束
+                    # None 仅在 WebSocket 连接关闭时（finally 块）才发送
+                    logger.info("Response done, continuing to listen (session still alive)")
                 elif msg_type == "error":
                     logger.error(f"Realtime API error: {data}")
+                elif msg_type == "input_audio_buffer.speech_started":
+                    logger.info("🎤 VAD detected: user started speaking")
+                elif msg_type == "input_audio_buffer.speech_stopped":
+                    logger.info("🎤 VAD detected: user stopped speaking")
         except Exception as e:
             logger.exception(f"Listen error: {e}")
         finally:
             # 确保队列收到结束标记
+            logger.warning("Listen loop ended, sending None to queues")
             await self.audio_queue.put(None)
             await self.text_delta_queue.put(None)
 
     async def send_audio(self, pcm_16k_bytes: bytes):
         """发送音频给百炼"""
-        if self.ws and not self.ws.closed:
+        # websockets 16.0: 使用 close_code 检查连接状态（None 表示未关闭）
+        if self.ws and self.ws.close_code is None:
             event = {
                 "event_id": "event_audio_" + base64.b64encode(pcm_16k_bytes[:16]).hex(),
                 "type": "input_audio_buffer.append",
                 "audio": base64.b64encode(pcm_16k_bytes).decode("utf-8")
             }
             await self.ws.send(json.dumps(event))
+            # 每发送 10 次打印一次日志（避免日志过多）
+            if not hasattr(self, '_send_count'):
+                self._send_count = 0
+            self._send_count += 1
+            if self._send_count % 10 == 0:
+                logger.debug(f"Sent {self._send_count} audio frames to 百炼, last size={len(pcm_16k_bytes)} bytes")
+        else:
+            logger.warning("Cannot send audio: WebSocket not connected")
 
     async def receive_audio(self) -> bytes | None:
         """接收百炼返回的音频（16kHz PCM）"""
@@ -102,6 +138,7 @@ class RealtimeAPIClient:
                 await self._listen_task
             except asyncio.CancelledError:
                 pass
-        if self.ws and not self.ws.closed:
+        # websockets 16.0: 使用 close_code 检查连接状态
+        if self.ws and self.ws.close_code is None:
             await self.ws.close()
             logger.info("Realtime API connection closed")

@@ -18,7 +18,7 @@ export function CallScreenWebRTC() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const subtitleRef = useRef<HTMLDivElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-  const remoteStreamRef = useRef<MediaStream | null>(null); // 跟踪当前的远程流
+  const trackReceivedRef = useRef(false); // 防止 ontrack 被多次调用
 
   // 字幕区域自动滚动到底部
   useEffect(() => {
@@ -35,6 +35,8 @@ export function CallScreenWebRTC() {
 
     const startCall = async () => {
       try {
+        console.log("[CallScreenWebRTC] Starting WebRTC call...");
+        
         // 1. 获取麦克风，强制开启回声消除和降噪
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -57,36 +59,147 @@ export function CallScreenWebRTC() {
 
         // 4. 接收后端返回的 AI 音频流并播放
         pc.ontrack = (event) => {
-          const newStream = event.streams[0];
-          console.log("[CallScreenWebRTC] Received remote audio track", newStream?.id);
-          
-          // 避免重复设置同一个流
-          if (remoteStreamRef.current === newStream) {
-            console.log("[CallScreenWebRTC] Same stream, skipping");
+          if (trackReceivedRef.current) {
+            console.log("[CallScreenWebRTC] Track already received, skipping");
             return;
           }
-          remoteStreamRef.current = newStream;
+          trackReceivedRef.current = true;
+          
+          const newStream = event.streams[0];
+          const track = event.track;
+          console.log("[CallScreenWebRTC] Received remote audio track", {
+            streamId: newStream?.id,
+            trackId: track?.id,
+            trackReadyState: track.readyState,
+            trackMuted: track.muted,
+            trackEnabled: track.enabled
+          });
+
+          // 🔊 使用 Web Audio API 分析音频轨道是否真的有数据
+          try {
+            const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(newStream);
+            const analyser = audioContext.createAnalyser();
+            analyser.fftSize = 2048;
+            source.connect(analyser);
+            
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            // 每秒检查一次音频数据
+            const audioCheckInterval = setInterval(() => {
+              analyser.getByteTimeDomainData(dataArray);
+              
+              // 计算音量
+              let sum = 0;
+              for (let i = 0; i < bufferLength; i++) {
+                const val = (dataArray[i] - 128) / 128;
+                sum += val * val;
+              }
+              const rms = Math.sqrt(sum / bufferLength);
+              const volumeDb = 20 * Math.log10(rms + 1e-6);
+              
+              console.log("[CallScreenWebRTC] 🔊 Audio analysis:", {
+                volume: rms.toFixed(4),
+                volumeDb: volumeDb.toFixed(2) + " dB",
+                hasSignal: rms > 0.01,
+                buffer: Array.from(dataArray.slice(0, 20))
+              });
+              
+              if (rms < 0.001) {
+                console.warn("[CallScreenWebRTC] ⚠️ No audio signal detected! Check if track has data.");
+              }
+            }, 1000);
+            
+            // 清理
+            event.track.addEventListener('ended', () => {
+              clearInterval(audioCheckInterval);
+              audioContext.close();
+            });
+            
+            console.log("[CallScreenWebRTC] ✅ Audio analysis started");
+          } catch (e) {
+            console.error("[CallScreenWebRTC] ❌ Failed to create audio analyzer:", e);
+          }
+          
+          // 监听轨道状态变化
+          track.addEventListener('ended', () => {
+            console.warn("[CallScreenWebRTC] Remote audio track ended");
+          });
+          track.addEventListener('mute', () => {
+            console.warn("[CallScreenWebRTC] Remote audio track muted");
+          });
+          track.addEventListener('unmute', () => {
+            console.log("[CallScreenWebRTC] Remote audio track unmuted");
+          });
           
           if (!remoteAudioRef.current) {
             const audio = document.createElement('audio');
             audio.autoplay = true;
             audio.playsInline = true;
+            audio.volume = 0.8; // 设置音量为 80%
             document.body.appendChild(audio);
             remoteAudioRef.current = audio;
+            console.log("[CallScreenWebRTC] Audio element created");
           }
           
-          // 设置新的媒体流
           remoteAudioRef.current.srcObject = newStream;
+          console.log("[CallScreenWebRTC] srcObject set, attempting to play...");
           
-          // 如果音频暂停了，尝试播放（避免 AbortError）
-          if (remoteAudioRef.current.paused) {
-            remoteAudioRef.current.play().catch(e => {
-              // AbortError 是正常的，忽略它
+          // 尝试播放
+          const playPromise = remoteAudioRef.current.play();
+          if (playPromise !== undefined) {
+            playPromise.then(() => {
+              console.log("[CallScreenWebRTC] ✅ Audio playing successfully");
+            }).catch(e => {
               if (e.name !== 'AbortError') {
-                console.error("[CallScreenWebRTC] Audio play error:", e);
+                console.error("[CallScreenWebRTC] ❌ Audio play error:", e);
+                console.error("[CallScreenWebRTC] Error name:", e.name);
+                console.error("[CallScreenWebRTC] Error message:", e.message);
+              } else {
+                console.log("[CallScreenWebRTC] AbortError (normal, play() was interrupted)");
               }
             });
           }
+          
+          // 监听音频播放事件
+          remoteAudioRef.current.addEventListener('playing', () => {
+            console.log("[CallScreenWebRTC] ✅ Audio element 'playing' event");
+            // 打印音频元素的详细状态
+            const audio = remoteAudioRef.current!;
+            console.log("[CallScreenWebRTC] Audio state:", {
+              paused: audio.paused,
+              currentTime: audio.currentTime,
+              duration: audio.duration,
+              volume: audio.volume,
+              muted: audio.muted,
+              readyState: audio.readyState,
+              networkState: audio.networkState,
+            });
+          });
+          remoteAudioRef.current.addEventListener('waiting', () => {
+            console.warn("[CallScreenWebRTC] ⚠️ Audio element 'waiting' event (buffering)");
+          });
+          remoteAudioRef.current.addEventListener('error', (e) => {
+            console.error("[CallScreenWebRTC] ❌ Audio element error:", e);
+          });
+          remoteAudioRef.current.addEventListener('stalled', () => {
+            console.warn("[CallScreenWebRTC] ⚠️ Audio element 'stalled' event");
+          });
+          
+          // 每秒打印一次音频播放状态
+          const statusInterval = setInterval(() => {
+            if (remoteAudioRef.current) {
+              const audio = remoteAudioRef.current;
+              console.log("[CallScreenWebRTC] Audio status:", {
+                paused: audio.paused,
+                currentTime: audio.currentTime,
+                volume: audio.volume,
+              });
+            } else {
+              clearInterval(statusInterval);
+            }
+          }, 3000);
         };
 
         // 5. 生成 Offer 并发送给 Python 后端
@@ -110,13 +223,12 @@ export function CallScreenWebRTC() {
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
 
         setStatus("通话中 — 请说话");
+        console.log("[CallScreenWebRTC] WebRTC connection established");
 
         // 开始计时
         timerRef.current = setInterval(() => {
           setCallDuration((prev) => prev + 1);
         }, 1000);
-
-        console.log("[CallScreenWebRTC] WebRTC connection established");
       } catch (err) {
         console.error("[CallScreenWebRTC] Failed to start call:", err);
         setStatus("连接失败");
@@ -126,6 +238,7 @@ export function CallScreenWebRTC() {
     startCall();
 
     return () => {
+      console.log("[CallScreenWebRTC] Cleanup");
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -139,7 +252,7 @@ export function CallScreenWebRTC() {
         remoteAudioRef.current.remove();
         remoteAudioRef.current = null;
       }
-      remoteStreamRef.current = null; // 重置流引用
+      trackReceivedRef.current = false;
     };
   }, [sessionId]);
 
