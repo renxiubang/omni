@@ -14,9 +14,15 @@ export async function fetchConfig(): Promise<AppConfig> {
   return _cachedConfig!;
 }
 
-export async function createSession(persona?: string): Promise<string> {
+export async function createSession(
+  persona?: string,
+  wordbookTraining?: boolean,
+  userId?: number,
+): Promise<string> {
   const params = new URLSearchParams();
   if (persona) params.set("persona", persona);
+  if (wordbookTraining) params.set("wordbook_training", "true");
+  if (userId) params.set("user_id", String(userId));
   const qs = params.toString();
   const url = `${API_BASE}/api/sessions${qs ? "?" + qs : ""}`;
   const res = await fetch(url, { method: "POST" });

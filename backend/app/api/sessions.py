@@ -10,8 +10,14 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 @router.post("", response_model=SessionOut)
 def create_session(
     persona: str = Query(default="", description="人格标识，空则使用默认人格"),
+    wordbook_training: bool = Query(default=False, description="是否启用单词本训练模式"),
+    user_id: int = Query(default=0, description="用户ID，用于加载单词本"),
 ) -> SessionOut:
-    session = session_store.create(persona=persona or None)
+    session = session_store.create(
+        persona=persona or None,
+        wordbook_training=wordbook_training,
+        user_id=user_id if user_id > 0 else None,
+    )
     return SessionOut(session_id=session.id)
 
 

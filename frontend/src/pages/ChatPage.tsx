@@ -22,10 +22,12 @@ import { CallOptionsPopup } from "../components/CallOptionsPopup";
 import { WordExplanationPopup } from "../components/WordExplanationPopup";
 import { WordbookDrawer } from "../components/WordbookDrawer";
 import type { ChatMessage } from "../types/chat";
+import { useAuth } from "../context/AuthContext";
 
 export function ChatPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { currentUser } = useAuth();
 
   /** 从 localStorage 读取保存的语速，默认 1.0 */
   const getSavedRate = (): number => {
@@ -44,7 +46,7 @@ export function ChatPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
   const [personas, setPersonas] = useState<PersonaInfo[]>([]);
-  const [selectedPersona, setSelectedPersona] = useState<string>("");
+  const [selectedPersona, setSelectedPersona] = useState<string>("english_teacher");
   /** 用于强制重渲染：voiceAudioUrls ref 变化时递增 */
   const [, setVoiceUrlVersion] = useState(0);
   /** 正在流式播放音频的 assistant 消息 ID（null 表示未在播放或已中止） */
@@ -425,6 +427,13 @@ export function ChatPage() {
       }
       if (event === "assistant_audio") {
         const sampleRate = Number(data.sample_rate) || outputSampleRateRef.current;
+        // AI 开始流式输出时，停止正在播放的 WAV（用户/AI 已完成语音）
+        if (activeAudioRef.current) {
+          activeAudioRef.current.pause();
+          activeAudioRef.current = null;
+          playingVoiceIdRef.current = null;
+          setPlayingVoiceId(null);
+        }
         await playerRef.current.enqueuePcm16Base64(String(data.data), sampleRate);
         // 收集音频数据供回放
         const asstId = assistantIdRef.current;
@@ -507,8 +516,9 @@ export function ChatPage() {
     listPersonas()
       .then(setPersonas)
       .catch(() => setPersonas([]));
-    // 创建会话（使用默认人格）
-    createSession().then(async (id) => {
+    // 创建会话
+    const trainingEnabled = localStorage.getItem("omni_wordbook_training") === "true";
+    createSession("english_teacher", trainingEnabled, currentUser?.id).then(async (id) => {
       setSessionId(id);
       try {
         const hist = await loadMessages(id);
@@ -546,7 +556,8 @@ export function ChatPage() {
       voiceAudioUrls.current.clear();
       setVoiceUrlVersion(0);
       // 创建新会话
-      const id = await createSession(personaKey || undefined);
+      const trainingEnabled = localStorage.getItem("omni_wordbook_training") === "true";
+      const id = await createSession(personaKey || undefined, trainingEnabled, currentUser?.id);
       setSessionId(id);
       setMessages([]);
       setBusy(false);
@@ -717,6 +728,12 @@ export function ChatPage() {
       playerRef.current.mute();
       setStreamingAudioId(null);
       return;
+    }
+
+    // 点击语音气泡时，停止正在流式播放的音频
+    if (streamingAudioId) {
+      playerRef.current.stop();
+      setStreamingAudioId(null);
     }
 
     // 场景 B：已静音但仍在流式 → 从头播放已收集的 PCM 数据
@@ -904,6 +921,13 @@ export function ChatPage() {
             );
             callAssistantIdRef.current = null;
           }
+          // 用户开始说话时，停止正在播放的 WAV（用户/AI 已完成语音）
+          if (activeAudioRef.current) {
+            activeAudioRef.current.pause();
+            activeAudioRef.current = null;
+            playingVoiceIdRef.current = null;
+            setPlayingVoiceId(null);
+          }
           // 新建用户语音气泡（只显示语音条，无文字）
           callUserVoiceStartRef.current = Date.now();
           callUserAudioChunksRef.current = [];  // 重置音频收集
@@ -980,6 +1004,13 @@ export function ChatPage() {
         case "assistant_audio": {
           const b64 = msg.data as string;
           const sr = (msg.sample_rate as number) ?? 24000;
+          // AI 开始流式输出时，停止正在播放的 WAV（用户/AI 已完成语音）
+          if (activeAudioRef.current) {
+            activeAudioRef.current.pause();
+            activeAudioRef.current = null;
+            playingVoiceIdRef.current = null;
+            setPlayingVoiceId(null);
+          }
           playerRef.current.enqueuePcm16Base64(b64, sr);
 
           // 创建或更新 assistant 消息
@@ -1185,9 +1216,8 @@ export function ChatPage() {
 
   // 查找当前 persona 名称
   const currentPersonaName = (() => {
-    if (!selectedPersona) return "默认";
     const p = personas.find((x) => x.key === selectedPersona);
-    return p ? p.name : "默认";
+    return p ? p.name : selectedPersona;
   })();
 
   return (
@@ -1223,25 +1253,8 @@ export function ChatPage() {
           {currentPersonaName}
         </span>
 
-        {/* 右侧：persona 下拉框 + 单词本按钮 */}
+        {/* 右侧：单词本按钮 */}
         <div className="ml-auto flex items-center gap-1">
-          {personas.length > 0 && (
-            <select
-              className="text-xs bg-white border border-[#d6d6d6] rounded px-2 py-1 max-w-[130px] truncate"
-              value={selectedPersona}
-              onChange={(e) => {
-                void handleChangePersona(e.target.value);
-              }}
-              disabled={busy}
-            >
-              <option value="">默认</option>
-              {personas.map((p) => (
-                <option key={p.key} value={p.key}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          )}
           <button
             type="button"
             className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-[#d6d6d6] transition-colors"
@@ -1289,7 +1302,13 @@ export function ChatPage() {
         voiceTextResult={voiceTextResult}
         onVoiceTextConsumed={() => setVoiceTextResult(null)}
       />
-      <SettingsDrawer visible={showSettings} onClose={() => setShowSettings(false)} />
+      <SettingsDrawer
+        visible={showSettings}
+        onClose={() => setShowSettings(false)}
+        personas={personas}
+        selectedPersona={selectedPersona}
+        onChangePersona={handleChangePersona}
+      />
       {toastMsg && (
         <Toast
           message={toastMsg}

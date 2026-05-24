@@ -34,6 +34,15 @@ async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
     persona = persona_store.get(session.persona or None)
     instructions = persona.system_prompt
 
+    # 如果开启了单词本训练模式，追加约束指令（放在人格 prompt 前面，优先级更高）
+    from app.services.wordbook_trainer import wordbook_trainer as wt
+    training_msgs = [
+        m for m in session.messages
+        if m.role == "system" and "VOCABULARY TRAINING MODE" in m.content
+    ]
+    if training_msgs:
+        instructions = training_msgs[-1].content + "\n\n" + instructions
+
     # 创建 RealtimeClient
     client = RealtimeClient(instructions=instructions)
 

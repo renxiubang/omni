@@ -2,9 +2,11 @@ import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
 import { VoicePrintEnroll } from "../components/VoicePrintEnroll";
 import { useVoicePrint } from "../hooks/useVoicePrint";
+import type { PersonaInfo } from "../api/client";
 
 const STORAGE_KEY = "omni_speech_rate";
 const DEFAULT_RATE = 1.0;
+const STORAGE_KEY_TRAINING = "omni_wordbook_training";
 
 function loadRate(): number {
   try {
@@ -32,10 +34,16 @@ const PRESETS = [
 interface SettingsDrawerProps {
   visible: boolean;
   onClose: () => void;
+  personas: PersonaInfo[];
+  selectedPersona: string;
+  onChangePersona: (personaKey: string) => Promise<void>;
 }
 
-export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
+export function SettingsDrawer({ visible, onClose, personas, selectedPersona, onChangePersona }: SettingsDrawerProps) {
   const [rate, setRate] = useState(loadRate);
+  const [wordbookTraining, setWordbookTraining] = useState(
+    () => localStorage.getItem(STORAGE_KEY_TRAINING) === "true",
+  );
   const { logout, currentUser } = useAuth();
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showEnroll, setShowEnroll] = useState(false);
@@ -157,6 +165,49 @@ export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
                 onClick={() => handleChange(p.value)}
               >
                 {p.label} {p.value.toFixed(2)}x
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 单词本训练 */}
+        <div className="mx-3 mt-3 bg-white rounded-lg p-4">
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-[15px] text-[#111]">单词本训练</span>
+            <input
+              type="checkbox"
+              className="w-5 h-5 rounded accent-[#07c160] cursor-pointer"
+              checked={wordbookTraining}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setWordbookTraining(v);
+                localStorage.setItem(STORAGE_KEY_TRAINING, String(v));
+              }}
+            />
+          </label>
+          <p className="text-[12px] text-[#999] mt-2 leading-relaxed">
+            开启后，AI 输出的语音和文本将仅限基础词汇和您的单词本
+          </p>
+        </div>
+
+        {/* 人格选择 */}
+        <div className="mx-3 mt-3 bg-white rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-[15px] text-[#111]">对话角色</span>
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {personas.map((p) => (
+              <button
+                key={p.key}
+                type="button"
+                className={`flex-1 h-8 rounded-full text-[13px] font-medium transition-colors ${
+                  selectedPersona === p.key
+                    ? "bg-[#07c160] text-white"
+                    : "bg-[#f0f0f0] text-[#333] hover:bg-[#e0e0e0]"
+                }`}
+                onClick={() => onChangePersona(p.key)}
+              >
+                {p.name}
               </button>
             ))}
           </div>

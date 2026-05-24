@@ -266,8 +266,15 @@ export function Composer({
                 "输入消息..."
               }
               value={text}
-              disabled={disabled || sttState === "listening"}
-              onChange={(e) => setText(e.target.value)}
+              disabled={disabled}
+              onChange={(e) => {
+                const newText = e.target.value;
+                setText(newText);
+                // 用户手动编辑时清除 base ref，后续识别结果全量替换而非拼接
+                if (sttState === "listening") {
+                  sttBaseTextRef.current = "";
+                }
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -304,7 +311,7 @@ export function Composer({
           <button
             type="button"
             className="h-9 px-4 rounded-md bg-[#07c160] text-white text-[15px] disabled:opacity-40 transition-colors"
-            disabled={disabled || !text.trim() || sttState === "listening"}
+            disabled={disabled || !text.trim()}
             onClick={submit}
           >
             发送

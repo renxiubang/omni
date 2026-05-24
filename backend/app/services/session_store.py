@@ -28,13 +28,35 @@ class SessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
 
-    def create(self, persona: str | None = None) -> Session:
-        """创建新会话，可选注入人格 system prompt。"""
+    def create(
+        self,
+        persona: str | None = None,
+        wordbook_training: bool = False,
+        user_id: int | None = None,
+    ) -> Session:
+        """创建新会话，可选注入人格 system prompt 和单词本训练约束。"""
         from app.config import settings
         from app.persona_loader import persona_store as ps
+        from app.services.wordbook_trainer import wordbook_trainer as wt
 
         session = Session(id=str(uuid.uuid4()))
         self._sessions[session.id] = session
+
+        # 单词本训练模式：约束指令优先于人格 prompt，使模型优先处理
+        if wordbook_training:
+            try:
+                constraint = wt.build_constraint_instruction(user_id)
+                if constraint:
+                    session.messages.append(
+                        StoredMessage(
+                            id=str(uuid.uuid4()),
+                            role="system",
+                            content=constraint,
+                            source="text",
+                        )
+                    )
+            except Exception:
+                pass
 
         # 根据人格标识注入 system 消息
         persona_key = persona or settings.default_persona
