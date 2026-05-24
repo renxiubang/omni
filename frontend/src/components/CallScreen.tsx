@@ -182,16 +182,20 @@ export function CallScreen() {
           break;
         case "assistant_token":
           setAssistantLine((t) => t + (msg.delta ?? ""));
+          // 标记AI开始说话，设置初始忽略时间（会被播放回调覆盖）
           if (!agentTurnActive.current) {
             agentTurnActive.current = true;
-            ignoreVadUntil.current = Date.now() + 2000;
+            // 早期预防：文本token到达时设置短暂忽略
+            ignoreVadUntil.current = Date.now() + 3000;
           }
           break;
         case "assistant_audio":
           playerRef.current.enqueuePcm16Base64(msg.data, msg.sample_rate ?? 16000);
+          // 标记AI开始说话，设置初始忽略时间（会被播放回调覆盖）
           if (!agentTurnActive.current) {
             agentTurnActive.current = true;
-            ignoreVadUntil.current = Date.now() + 2000;
+            // 早期预防：音频数据到达时设置短暂忽略
+            ignoreVadUntil.current = Date.now() + 3000;
           }
           break;
         case "turn_cancelled":
@@ -202,10 +206,17 @@ export function CallScreen() {
           setAssistantLine("");
           agentTurnActive.current = false;
           ignoreVadUntil.current = 0;
+          // 恢复麦克风（如果被禁用）
+          if (micStreamRef.current) {
+            const micTrack = micStreamRef.current.getAudioTracks()[0];
+            if (micTrack && !micTrack.enabled) {
+              micTrack.enabled = true;
+            }
+          }
           break;
         case "turn_end":
           agentTurnActive.current = false;
-          ignoreVadUntil.current = 0;
+          // 不立即清除 ignoreVadUntil，等待播放结束回调处理
           break;
         case "error":
           setStatus(msg.message ?? "错误");
