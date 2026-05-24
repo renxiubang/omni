@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
+import { VoicePrintEnroll } from "../components/VoicePrintEnroll";
+import { useVoicePrint } from "../hooks/useVoicePrint";
 
 const STORAGE_KEY = "omni_speech_rate";
 const DEFAULT_RATE = 1.0;
@@ -34,8 +36,28 @@ interface SettingsDrawerProps {
 
 export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
   const [rate, setRate] = useState(loadRate);
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showEnroll, setShowEnroll] = useState(false);
+
+  // 使用 useVoicePrint Hook
+  const {
+    voiceProfiles,
+    isLoading,
+    error,
+    fetchVoiceProfiles,
+    deleteVoiceProfile,
+  } = useVoicePrint(user?.id || 0);
+
+  // 每次打开时从 localStorage 重新加载，并获取声纹档案列表
+  useEffect(() => {
+    if (visible) {
+      setRate(loadRate());
+      if (user?.id) {
+        fetchVoiceProfiles();
+      }
+    }
+  }, [visible, user?.id, fetchVoiceProfiles]);
 
   // 每次打开时从 localStorage 重新加载
   useEffect(() => {
@@ -140,6 +162,75 @@ export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
           </div>
         </div>
 
+        {/* 声纹管理区域 */}
+        <div className="mx-3 mt-3 bg-white rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-[#f0f0f0]">
+            <h3 className="text-[15px] font-medium text-[#111]">声纹管理</h3>
+          </div>
+
+          {/* 声纹档案列表 */}
+          {isLoading ? (
+            <div className="px-4 py-8 text-center text-[13px] text-[#999]">
+              加载中...
+            </div>
+          ) : voiceProfiles.length > 0 ? (
+            <div>
+              {voiceProfiles.map((profile) => (
+                <div
+                  key={profile.id}
+                  className="flex items-center justify-between px-4 py-3 border-b border-[#f0f0f0] last:border-b-0"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[15px] text-[#111] truncate">
+                      {profile.name}
+                    </div>
+                    <div className="text-[12px] text-[#999] mt-1">
+                      {new Date(profile.created_at).toLocaleDateString("zh-CN")}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm(`确定要删除声纹档案"${profile.name}"吗？`)) {
+                        deleteVoiceProfile(profile.id);
+                      }
+                    }}
+                    className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-[#fff2f0] transition-colors"
+                    aria-label="删除"
+                  >
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="#ff4d4f"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="px-4 py-8 text-center text-[13px] text-[#999]">
+              暂无声纹档案
+            </div>
+          )}
+
+          {/* 录入新声纹按钮 */}
+          <button
+            type="button"
+            onClick={() => setShowEnroll(true)}
+            className="w-full px-4 py-3 text-[15px] text-[#07c160] hover:bg-[#f6f6f6] transition-colors"
+          >
+            + 录入新声纹
+          </button>
+        </div>
+
         {/* 退出登录按钮 */}
         <div className="mx-3 mt-3 bg-white rounded-lg overflow-hidden">
           <button
@@ -150,6 +241,21 @@ export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
             退出登录
           </button>
         </div>
+
+        {/* 声纹录入组件 */}
+        {showEnroll && user?.id && (
+          <VoicePrintEnroll
+            userId={user.id}
+            onClose={() => {
+              setShowEnroll(false);
+              fetchVoiceProfiles();
+            }}
+            onSuccess={() => {
+              setShowEnroll(false);
+              fetchVoiceProfiles();
+            }}
+          />
+        )}
 
         {/* 退出登录确认弹窗 */}
         {showLogoutConfirm && (

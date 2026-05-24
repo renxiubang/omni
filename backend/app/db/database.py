@@ -4,6 +4,7 @@ This module provides SQLite database initialization and CRUD operations
 for users and wordbook tables.
 """
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +52,21 @@ def init_db() -> None:
         )
     """)
 
+    # Create voice_profiles table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS voice_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            audio_samples TEXT NOT NULL,
+            enrollment_text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, name),
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    """)
+
     # Create index for faster queries
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_wordbook_user_id 
@@ -60,6 +76,11 @@ def init_db() -> None:
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_wordbook_word 
         ON wordbook (word)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_voice_profiles_user_id 
+        ON voice_profiles (user_id)
     """)
 
     conn.commit()
@@ -232,4 +253,175 @@ def check_word_in_wordbook(user_id: int, word: str) -> Optional[Dict[str, Any]]:
 
     if row:
         return dict(row)
+    return None
+
+
+# Voice Profiles CRUD operations
+
+def create_voice_profile(
+    user_id: int,
+    name: str,
+    audio_samples: List[str],
+    enrollment_text: str,
+) -> Dict[str, Any]:
+    """Create a new voice profile."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    now = datetime.now(timezone.utc).isoformat()
+    audio_samples_json = json.dumps(audio_samples)
+
+    try:
+        cursor.execute("""
+            INSERT INTO voice_profiles
+            (user_id, name, audio_samples, enrollment_text, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (user_id, name, audio_samples_json, enrollment_text, now, now))
+
+        conn.commit()
+        profile_id = cursor.lastrowid
+
+        return {
+            "id": profile_id,
+            "user_id": user_id,
+            "name": name,
+            "audio_samples": audio_samples,
+            "enrollment_text": enrollment_text,
+            "created_at": now,
+            "updated_at": now,
+        }
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise ValueError(f"Voice profile '{name}' already exists for this user")
+    finally:
+        conn.close()
+
+
+def get_user_voice_profiles(user_id: int) -> List[Dict[str, Any]]:
+    """Get all voice profiles for a user."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, user_id, name, audio_samples, enrollment_text,
+               created_at, updated_at
+        FROM voice_profiles
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+    """, (user_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    profiles = []
+    for row in rows:
+        profile = dict(row)
+        profile["audio_samples"] = json.loads(profile["audio_samples"])
+        profiles.append(profile)
+
+    return profiles
+
+
+def get_voice_profile_by_id(profile_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    """Get a voice profile by ID, ensuring it belongs to the user."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, user_id, name, audio_samples, enrollment_text,
+               created_at, updated_at
+        FROM voice_profiles
+        WHERE id = ? AND user_id = ?
+    """, (profile_id, user_id))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        profile = dict(row)
+        profile["audio_samples"] = json.loads(profile["audio_samples"])
+        return profile
+    return None
+
+
+def delete_voice_profile(profile_id: int, user_id: int) -> bool:
+    """Delete a voice profile, ensuring it belongs to the user."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # First, get the profile to retrieve audio file paths
+    cursor.execute(
+        "SELECT audio_samples FROM voice_profiles WHERE id = ? AND user_id = ?",
+        (profile_id, user_id)
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        return False
+
+    # Delete the profile from database
+    cursor.execute(
+        "DELETE FROM voice_profiles WHERE id = ? AND user_id = ?",
+        (profile_id, user_id)
+    )
+
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+
+    return deleted
+
+
+def update_voice_profile(
+    profile_id: int,
+    user_id: int,
+    name: Optional[str] = None,
+    audio_samples: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Update a voice profile."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Build update query dynamically
+    updates = []
+    params = []
+
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name)
+
+    if audio_samples is not None:
+        updates.append("audio_samples = ?")
+        params.append(json.dumps(audio_samples))
+
+    if updates:
+        updates.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+        params.append(profile_id)
+        params.append(user_id)
+
+        cursor.execute(f"""
+            UPDATE voice_profiles
+            SET {', '.join(updates)}
+            WHERE id = ? AND user_id = ?
+        """, params)
+
+        conn.commit()
+
+    # Get updated profile
+    cursor.execute("""
+        SELECT id, user_id, name, audio_samples, enrollment_text,
+               created_at, updated_at
+        FROM voice_profiles
+        WHERE id = ? AND user_id = ?
+    """, (profile_id, user_id))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        profile = dict(row)
+        profile["audio_samples"] = json.loads(profile["audio_samples"])
+        return profile
     return None

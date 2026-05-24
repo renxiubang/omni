@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat, sessions, translate, users, voice, wordbook
+from app.api import chat, sessions, translate, users, voice, voice_print, wordbook
 from app.config import settings
 from app.db import init_db
 from app.gateway import call_ws, stt_ws
@@ -44,6 +44,7 @@ app.include_router(chat.router)
 app.include_router(translate.router)
 app.include_router(users.router)
 app.include_router(voice.router)
+app.include_router(voice_print.router)
 app.include_router(wordbook.router)
 app.include_router(call_ws.router)
 app.include_router(stt_ws.router)
