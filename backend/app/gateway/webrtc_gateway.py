@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from pathlib import Path
 
 import numpy as np
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
@@ -15,153 +14,100 @@ from app.services.realtime_client import RealtimeAPIClient
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# 音频重采样器
-resampler_to_16k = AudioResampler(format='s16', layout='mono', rate=16000)
-resampler_to_48k = AudioResampler(format='s16', layout='mono', rate=48000)
-
 # 存储活跃的 PeerConnection
 pcs = set()
 
 
 class QwenAudioTrack(MediaStreamTrack):
-    """自定义音频轨道，用于发送 AI 音频给前端"""
+    """自定义音频轨道，用于发送 AI 音频给前端（24kHz → 48kHz 重采样）"""
     kind = "audio"
-    
+
     # WebRTC 期望的音频参数
-    SAMPLE_RATE = 48000  # 48kHz
-    FRAME_SIZE = 480      # 10ms 帧 = 480 samples @ 48kHz
-    FRAME_DURATION_US = 10000  # 10ms = 10000 微秒
+    SAMPLE_RATE = 48000     # 48kHz
+    FRAME_SIZE = 480        # 10ms @ 48kHz = 480 samples
+    FRAME_BYTES = 480 * 2   # 16-bit = 2 bytes/sample
+    FRAME_DURATION_US = 10000
+    GAIN = 2.0              # +6dB 音量增益
 
     def __init__(self):
         super().__init__()
-        self.queue = asyncio.Queue()
+        self.queue: asyncio.Queue = asyncio.Queue()
         self._ended = False
-        # aiortc MediaStreamTrack 使用双下划线（name mangling）
-        # 需要设置 _MediaStreamTrack__ended = False 才能让 readyState 返回 "live"
         self._MediaStreamTrack__ended = False
-        # 重采样后的音频数据缓冲区（PCM 数据）
         self._pcm_buffer = b""
-        # PTS 计数器（微秒单位）
         self._pts_us = 0
+        self._frame_count = 0
+        # 每个连接独立的 resampler（避免全局共享的竞态问题）
+        self._resampler = AudioResampler(format='s16', layout='mono', rate=self.SAMPLE_RATE)
 
     async def recv(self):
-        """接收从百炼来的音频数据，重采样后发送给前端"""
+        """返回下一个 10ms 音频帧（迭代模式，无递归风险）"""
         if self._ended:
-            logger.debug("QwenAudioTrack.recv: ended, returning None")
             return None
 
-        # 如果 PCM 缓冲区还有数据，先返回 10ms 帧
-        if len(self._pcm_buffer) >= self.FRAME_SIZE * 2:  # 16-bit = 2 bytes/sample
-            frame_data = self._pcm_buffer[:self.FRAME_SIZE * 2]
-            self._pcm_buffer = self._pcm_buffer[self.FRAME_SIZE * 2:]
-            
-            # 创建 AudioFrame
-            pcm_int16 = np.frombuffer(frame_data, dtype=np.int16)
-            frame = AudioFrame.from_ndarray(
-                pcm_int16.reshape(1, -1),
-                format='s16',
-                layout='mono'
-            )
-            frame.sample_rate = self.SAMPLE_RATE
-            frame.pts = self._pts_us
-            self._pts_us += self.FRAME_DURATION_US
-            
-            # 打印调试信息（每 10 帧打印一次）
-            if not hasattr(self, '_frame_count'):
-                self._frame_count = 0
-            self._frame_count += 1
-            if self._frame_count % 10 == 0:
-                frame_data_arr = frame.to_ndarray()
-                logger.info(f"🔊 Sending frame #{self._frame_count}: "
-                           f"samples={frame.samples}, pts={frame.pts}us, "
-                           f"mean={frame_data_arr.mean():.2f}, std={frame_data_arr.std():.2f}")
-            
-            return frame
+        while True:
+            # 1. 缓冲区有足够数据 → 直接返回一帧
+            if len(self._pcm_buffer) >= self.FRAME_BYTES:
+                return self._pop_frame()
 
-        # 缓冲区数据不足，从队列获取新的音频数据
-        pcm_16k_data = await self.queue.get()
-        if pcm_16k_data is None:
-            # 结束标记
-            self._ended = True
-            logger.info("QwenAudioTrack.recv: received end marker, setting _ended=True")
-            self._MediaStreamTrack__ended = True
-            
-            # 如果缓冲区还有剩余数据，返回最后的帧
-            if len(self._pcm_buffer) > 0:
-                # 补零到 10ms
-                remaining = self.FRAME_SIZE * 2 - len(self._pcm_buffer)
-                if remaining > 0:
-                    self._pcm_buffer += b'\x00' * remaining
-                return await self.recv()
-            
-            return None
+            # 2. 缓冲区不足 → 从队列获取新数据
+            pcm_24k_data = await self.queue.get()
+            if pcm_24k_data is None:
+                # 结束标记：排空缓冲区后返回 None
+                self._ended = True
+                self._MediaStreamTrack__ended = True
+                logger.info("QwenAudioTrack: end marker received, draining buffer")
+                if len(self._pcm_buffer) > 0:
+                    return self._pop_frame(pad=True)
+                return None
 
-        try:
-            # 转换为 AV AudioFrame (24kHz - 百炼 Realtime API 默认输出采样率)
-            pcm_int16 = np.frombuffer(pcm_16k_data, dtype=np.int16)
-            
-            # 音量增益（+6dB，提升音量以匹配其他场景）
-            # 使用 np.clip 防止溢出（int16 范围：-32768 到 32767）
-            GAIN = 2.0
-            pcm_int16 = np.clip(pcm_int16.astype(np.float32) * GAIN, -32768, 32767).astype(np.int16)
-            
-            # 验证输入数据（前 3 帧打印）
-            if not hasattr(self, '_input_frame_count'):
-                self._input_frame_count = 0
-            self._input_frame_count += 1
-            if self._input_frame_count <= 3:
-                logger.warning(f"🔊 Input data check #{self._input_frame_count}: "
-                               f"mean={pcm_int16.mean():.2f}, std={pcm_int16.std():.2f}, "
-                               f"first_10={pcm_int16[:10].tolist()}, "
-                               f"bytes={len(pcm_16k_data)}, samples={len(pcm_int16)}")
-            
-            # 创建 AudioFrame - 百炼返回的是 24kHz 采样率
-            # 参考 config.py: dashscope_audio_sample_rate: int = 24000
-            frame_24k = AudioFrame.from_ndarray(
-                pcm_int16.reshape(1, -1).copy(),  # 使用 copy() 确保数据被正确复制
-                format='s16',
-                layout='mono'
-            )
-            frame_24k.sample_rate = 24000  # 百炼 Realtime API 输出采样率
-            # ⚠️ 不设置 PTS！让 PyAV resampler 自动处理时间戳
-            # 手动设置 PTS 会导致时间戳不连续，引起音频颤抖
-            
-            # 重采样为 48kHz 以适配 WebRTC
-            frames_48k = resampler_to_48k.resample(frame_24k)
-            
-            if not frames_48k:
-                logger.warning("🔊 QwenAudioTrack.recv: resampling produced no frames, skipping")
-                # 递归调用以获取下一帧（避免返回 None 导致轨道结束）
-                return await self.recv()
-            
-            # 将所有重采样后的帧数据合并到缓冲区
-            for f in frames_48k:
-                f_data = f.to_ndarray().tobytes()
-                self._pcm_buffer += f_data
-                if not hasattr(self, '_resample_count'):
-                    self._resample_count = 0
-                self._resample_count += 1
-                logger.debug(f"🔊 Resampled frame {self._resample_count}: "
-                            f"samples={f.samples}, pts={f.pts}")
-            
-            # 递归调用以返回第一帧
-            return await self.recv()
-            
-        except Exception as e:
-            logger.error(f"QwenAudioTrack.recv error: {type(e).__name__}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            # 发生错误时，返回静音帧而不是结束轨道
-            return self._create_silence_frame()
+            # 3. 重采样并写入缓冲区
+            try:
+                self._append_resampled(pcm_24k_data)
+            except Exception:
+                logger.exception("QwenAudioTrack: resample failed, skipping chunk")
+                # 继续循环，不返回静音帧（静音帧会掩藏错误）
 
-    def _create_silence_frame(self):
-        """创建静音帧（用于错误恢复）"""
-        silence = np.zeros((1, self.FRAME_SIZE), dtype=np.int16)  # 10ms @ 48kHz
-        frame = AudioFrame.from_ndarray(silence, format='s16', layout='mono')
+    def _pop_frame(self, pad: bool = False) -> AudioFrame | None:
+        """从缓冲区取出 10ms 帧，必要时补零"""
+        needed = self.FRAME_BYTES
+        chunk = self._pcm_buffer[:needed]
+        self._pcm_buffer = self._pcm_buffer[needed:]
+
+        if len(chunk) < needed:
+            if not pad:
+                return None
+            chunk += b'\x00' * (needed - len(chunk))
+
+        arr = np.frombuffer(chunk, dtype=np.int16).reshape(1, -1)
+        frame = AudioFrame.from_ndarray(arr, format='s16', layout='mono')
         frame.sample_rate = self.SAMPLE_RATE
         frame.pts = self._pts_us
         self._pts_us += self.FRAME_DURATION_US
+
+        self._frame_count += 1
+        if logger.isEnabledFor(logging.DEBUG) and self._frame_count % 100 == 0:
+            logger.debug(f"Sending frame #{self._frame_count}: pts={frame.pts}us")
         return frame
+
+    def _append_resampled(self, pcm_24k_bytes: bytes) -> None:
+        """将百炼返回的 24kHz PCM 重采样为 48kHz 并追加到缓冲区"""
+        arr = np.frombuffer(pcm_24k_bytes, dtype=np.int16)
+
+        # +6dB 增益，clip 防止溢出
+        arr = np.clip(arr.astype(np.float32) * self.GAIN, -32768, 32767).astype(np.int16)
+
+        frame_24k = AudioFrame.from_ndarray(
+            arr.reshape(1, -1).copy(), format='s16', layout='mono'
+        )
+        frame_24k.sample_rate = 24000
+
+        frames_48k = self._resampler.resample(frame_24k)
+        if not frames_48k:
+            return  # resampler 尚未积累足够样本，下次继续
+
+        for f in frames_48k:
+            self._pcm_buffer += f.to_ndarray().tobytes()
 
 
 @router.post("/api/webrtc/offer")
@@ -195,70 +141,61 @@ async def offer(request: Request):
     def on_track(track):
         nonlocal _track_processing_started
         logger.info(f"Received track: kind={track.kind}, id={track.id}")
-        
-        # 防止重复处理
+
         if _track_processing_started:
-            logger.warning(f"⚠️ Track already being processed, skipping duplicate track: {track.id}")
+            logger.warning("Track already being processed, skipping duplicate: %s", track.id)
             return
         _track_processing_started = True
-        
+
         if track.kind == "audio":
-            logger.info("接收到浏览器麦克风音频流（已 AEC 净化）")
+            logger.info("Received browser mic audio stream (AEC processed)")
+
+            # 每个连接独立的重采样器，48kHz → 16kHz
+            mic_resampler = AudioResampler(format='s16', layout='mono', rate=16000)
 
             async def process_audio():
                 try:
-                    # 连接百炼
-                    logger.info("Connecting to 百炼 Realtime API...")
+                    logger.info("Connecting to DashScope Realtime API...")
                     await qwen_client.connect()
-                    logger.info("Successfully connected to 百炼 Realtime API")
+                    logger.info("Connected to DashScope Realtime API")
 
-                    # 启动音频接收任务
+                    # 启动 AI 音频接收任务
                     async def relay_audio():
-                        logger.info("Started relay_audio task")
                         while True:
-                            pcm_16k = await qwen_client.receive_audio()
-                            if pcm_16k is None:
-                                logger.info("relay_audio: received None, ending")
+                            pcm_24k = await qwen_client.receive_audio()
+                            if pcm_24k is None:
+                                logger.info("relay_audio: ended")
                                 break
-                            logger.debug(f"relay_audio: received {len(pcm_16k)} bytes")
-                            await qwen_track.queue.put(pcm_16k)
+                            await qwen_track.queue.put(pcm_24k)
 
                     asyncio.create_task(relay_audio())
-                    logger.info("Created relay_audio task")
 
-                    # 处理从前端来的音频
-                    logger.info("Started receiving audio from frontend")
-                    audio_frame_count = 0
+                    # 主循环：接收前端音频 → 重采样 → 发送百炼
+                    frame_count = 0
                     try:
                         while True:
                             try:
                                 frame = await track.recv()
-                                audio_frame_count += 1
-                                
-                                # 每 100 帧打印一次日志（约 2 秒）
-                                if audio_frame_count % 100 == 0:
-                                    logger.info(f"Received {audio_frame_count} audio frames from frontend")
-                                
-                                # 将 48kHz 重采样为 16kHz
-                                frames_16k = resampler_to_16k.resample(frame)
-                                for f in frames_16k:
-                                    pcm_bytes = f.to_ndarray().tobytes()
-                                    await qwen_client.send_audio(pcm_bytes)
-                            except Exception as e:
-                                # 检查是否是连接关闭导致的错误
-                                if pc.connectionState in ["failed", "closed", "disconnected"]:
-                                    logger.info(f"PeerConnection closed ({pc.connectionState}), stopping audio receive")
+                                frame_count += 1
+
+                                if frame_count % 100 == 0:
+                                    logger.debug("Received %d audio frames from frontend", frame_count)
+
+                                for f in mic_resampler.resample(frame):
+                                    await qwen_client.send_audio(f.to_ndarray().tobytes())
+                            except Exception:
+                                if pc.connectionState in ("failed", "closed", "disconnected"):
+                                    logger.info("PeerConnection %s, stopping audio receive", pc.connectionState)
                                 else:
-                                    logger.error(f"Audio processing error: {type(e).__name__}: {e}")
+                                    logger.exception("Audio processing error")
                                 break
-                        logger.info(f"Audio receiving stopped, total frames={audio_frame_count}")
+                        logger.info("Audio receiving stopped, total frames=%d", frame_count)
                     except asyncio.CancelledError:
                         logger.info("Audio processing task cancelled")
-                except Exception as e:
-                    logger.exception(f"Process audio error: {e}")
+                except Exception:
+                    logger.exception("process_audio error")
 
             asyncio.create_task(process_audio())
-            logger.info("Created process_audio task")
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():

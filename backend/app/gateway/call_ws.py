@@ -5,9 +5,8 @@ import logging
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from app.services.omni_client import omni_client
 from app.services.session_store import session_store
-from app.config import settings
+from app.services.voice_service import process_voice_turn
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -42,52 +41,22 @@ async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
         await cancel_current()
 
         async def run() -> None:
-            # 直接将音频存入 session，不调用 ASR
-            # build_messages() 会自动将带 audio_b64 的用户消息编码为 input_audio 格式
-            session_store.add_message(
-                session_id,
-                role="user",
-                content="",  # 语音输入无文字，由 Omni 多模态直接理解
-                source="call",
-                audio_bytes=pcm_bytes,
-                audio_format="wav",
-            )
-
-            await _send(ws, {"type": "user_final", "text": "[语音]"})
-
-            sess = session_store.get(session_id)
-            if not sess:
-                return
-            messages = omni_client.build_messages(sess.messages)
-            full_text: list[str] = []
-
-            try:
-                async for text_delta, audio_b64 in omni_client.stream_call(messages):
-                    if text_delta:
-                        full_text.append(text_delta)
-                        await _send(
-                            ws, {"type": "assistant_token", "delta": text_delta}
-                        )
-                    if audio_b64:
-                        await _send(
-                            ws,
-                            {
-                                "type": "assistant_audio",
-                                "data": audio_b64,
-                                "sample_rate": settings.output_sample_rate,
-                            },
-                        )
-            except asyncio.CancelledError:
-                await _send(ws, {"type": "turn_cancelled"})
-                raise
-
-            session_store.add_message(
-                session_id,
-                role="assistant",
-                content="".join(full_text),
-                source="call",
-            )
-            await _send(ws, {"type": "turn_end"})
+            async for ev in process_voice_turn(session_id, pcm_bytes, source="call"):
+                match ev.kind:
+                    case "user_final":
+                        await _send(ws, {"type": "user_final", "text": ev.text})
+                    case "token":
+                        await _send(ws, {"type": "assistant_token", "delta": ev.delta})
+                    case "audio":
+                        await _send(ws, {
+                            "type": "assistant_audio",
+                            "data": ev.audio_b64,
+                            "sample_rate": ev.sample_rate,
+                        })
+                    case "turn_end":
+                        await _send(ws, {"type": "turn_end"})
+                    case "error":
+                        await _send(ws, {"type": "error", "message": ev.error})
 
         nonlocal current_task
         current_task = asyncio.create_task(run())
@@ -117,6 +86,6 @@ async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
 
     except WebSocketDisconnect:
         await cancel_current()
-    except Exception as e:
+    except Exception:
         logger.exception("call ws error")
-        await _send(ws, {"type": "error", "message": str(e)})
+        await _send(ws, {"type": "error", "message": "Internal error"})
