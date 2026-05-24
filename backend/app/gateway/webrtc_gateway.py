@@ -100,6 +100,11 @@ class QwenAudioTrack(MediaStreamTrack):
             # 转换为 AV AudioFrame (24kHz - 百炼 Realtime API 默认输出采样率)
             pcm_int16 = np.frombuffer(pcm_16k_data, dtype=np.int16)
             
+            # 音量增益（+6dB，提升音量以匹配其他场景）
+            # 使用 np.clip 防止溢出（int16 范围：-32768 到 32767）
+            GAIN = 2.0
+            pcm_int16 = np.clip(pcm_int16.astype(np.float32) * GAIN, -32768, 32767).astype(np.int16)
+            
             # 验证输入数据（前 3 帧打印）
             if not hasattr(self, '_input_frame_count'):
                 self._input_frame_count = 0
@@ -118,7 +123,8 @@ class QwenAudioTrack(MediaStreamTrack):
                 layout='mono'
             )
             frame_24k.sample_rate = 24000  # 百炼 Realtime API 输出采样率
-            frame_24k.pts = self._pts_us  # 使用相同的 PTS 基准
+            # ⚠️ 不设置 PTS！让 PyAV resampler 自动处理时间戳
+            # 手动设置 PTS 会导致时间戳不连续，引起音频颤抖
             
             # 重采样为 48kHz 以适配 WebRTC
             frames_48k = resampler_to_48k.resample(frame_24k)
