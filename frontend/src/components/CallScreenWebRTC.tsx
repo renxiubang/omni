@@ -13,6 +13,8 @@ export function CallScreenWebRTC() {
   const [status, setStatus] = useState("连接中...");
   const [callDuration, setCallDuration] = useState(0);
   const [subtitleList, _setSubtitleList] = useState<{ role: "user" | "assistant"; text: string }[]>([]);
+  const [volume, setVolume] = useState(0.8);
+  const [isMuted, setIsMuted] = useState(false);
   
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -27,6 +29,13 @@ export function CallScreenWebRTC() {
     }
   }, [subtitleList]);
 
+  // 应用音量控制到音频元素
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.volume = isMuted ? 0 : volume;
+    }
+  }, [volume, isMuted]);
+
   useEffect(() => {
     if (!sessionId) {
       setStatus("错误：会话ID为空");
@@ -38,12 +47,13 @@ export function CallScreenWebRTC() {
         console.log("[CallScreenWebRTC] Starting WebRTC call...");
         
         // 1. 获取麦克风，强制开启回声消除和降噪
+        // 注意：Qwen3.5-Omni 要求输入音频为 16kHz PCM
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
-            sampleRate: { ideal: 48000 }
+            sampleRate: { ideal: 16000 }  // 改为 16kHz，与文档要求一致
           },
           video: false
         });
@@ -53,6 +63,53 @@ export function CallScreenWebRTC() {
           iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
         pcRef.current = pc;
+
+        // 监听后端创建的 DataChannel（用于接收字幕和事件）
+        pc.ondatachannel = (event) => {
+          const datachannel = event.channel;
+          console.log("[CallScreenWebRTC] Received DataChannel:", datachannel.label);
+          
+          datachannel.onopen = () => {
+            console.log("[CallScreenWebRTC] DataChannel opened:", datachannel.label);
+          };
+          
+          datachannel.onmessage = (e) => {
+            try {
+              const data = JSON.parse(e.data);
+              console.log("[CallScreenWebRTC] Received subtitle:", data);
+              
+              // 处理字幕数据
+              if (data.role === "assistant") {
+                if (data.delta) {
+                  // 流式字幕：追加到当前字幕
+                  _setSubtitleList((prev) => {
+                    const newList = [...prev];
+                    if (newList.length > 0 && newList[newList.length - 1].role === "assistant") {
+                      // 更新最后一条 assistant 字幕
+                      newList[newList.length - 1] = {
+                        ...newList[newList.length - 1],
+                        text: newList[newList.length - 1].text + data.delta
+                      };
+                    } else {
+                      // 添加新的 assistant 字幕
+                      newList.push({ role: "assistant", text: data.delta });
+                    }
+                    return newList;
+                  });
+                } else if (data.text && data.done) {
+                  // 字幕完成，无需额外操作
+                  console.log("[CallScreenWebRTC] Subtitle done:", data.text);
+                }
+              }
+            } catch (err) {
+              console.error("[CallScreenWebRTC] Failed to parse DataChannel message:", err);
+            }
+          };
+          
+          datachannel.onclose = () => {
+            console.log("[CallScreenWebRTC] DataChannel closed:", datachannel.label);
+          };
+        };
 
         // 3. 将麦克风音频流发送给后端
         stream.getTracks().forEach(track => pc.addTrack(track, stream));
@@ -326,8 +383,34 @@ export function CallScreenWebRTC() {
         ))}
       </div>
 
-      {/* 底部挂断按钮 */}
-      <div className="p-8 flex justify-center">
+      {/* 底部控制区 */}
+      <div className="p-8 flex flex-col items-center gap-4">
+        {/* 音量控制 */}
+        <div className="flex items-center gap-3 bg-white/10 backdrop-blur-lg rounded-full px-4 py-2">
+          <button
+            type="button"
+            onClick={() => setIsMuted(!isMuted)}
+            className="text-2xl hover:scale-110 transition-transform cursor-pointer"
+            title={isMuted ? "取消静音" : "静音"}
+          >
+            {isMuted ? "🔇" : "🔊"}
+          </button>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={volume}
+            onChange={(e) => setVolume(parseFloat(e.target.value))}
+            className="w-24 h-1 accent-[#07c160] cursor-pointer"
+            title={`音量: ${Math.round(volume * 100)}%`}
+          />
+          <span className="text-xs text-gray-400 w-8 text-right">
+            {Math.round(volume * 100)}%
+          </span>
+        </div>
+
+        {/* 挂断按钮 */}
         <button
           type="button"
           onClick={hangup}
