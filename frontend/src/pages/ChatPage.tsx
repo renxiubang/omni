@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   createSession,
+  callWsUrl,
   fetchConfig,
   listPersonas,
   loadMessages,
@@ -76,6 +77,17 @@ export function ChatPage() {
   const [showCallOptions, setShowCallOptions] = useState(false);
   /** 语音转文字结果：非空时将填入输入框 */
   const [voiceTextResult, setVoiceTextResult] = useState<string | null>(null);
+
+  /** ---- 通话内联状态 ---- */
+  const [isCalling, setIsCalling] = useState(false);
+  const [callDuration, setCallDuration] = useState(0);
+  const callWsRef = useRef<WebSocket | null>(null);
+  const callMicStreamRef = useRef<MediaStream | null>(null);
+  const callDurationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** 当前通话中 assistant 消息 ID */
+  const callAssistantIdRef = useRef<string | null>(null);
+  /** 当前通话中用户消息 ID */
+  const callUserIdRef = useRef<string | null>(null);
 
   /** iOS Safari 键盘修复：动态跟踪 visualViewport，保持固定定位元素始终可见 */
   const [vvTop, setVvTop] = useState(0);
@@ -836,16 +848,298 @@ export function ChatPage() {
     [messages, translatingId],
   );
 
+  /* ---- 内联通话逻辑 ---- */
+
+  const int16ToBase64 = (buffer: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  };
+
+  const startCall = useCallback(async () => {
+    if (!sessionId || isCalling) return;
+    setIsCalling(true);
+    setCallDuration(0);
+    setBusy(true);
+
+    // 停止当前文字/语音消息的播放
+    playerRef.current.stop();
+    if (activeAudioRef.current) {
+      activeAudioRef.current.pause();
+      activeAudioRef.current = null;
+    }
+    playingVoiceIdRef.current = null;
+    setPlayingVoiceId(null);
+    setStreamingAudioId(null);
+
+    const wsUrl = callWsUrl(sessionId);
+    const ws = new WebSocket(wsUrl);
+    callWsRef.current = ws;
+
+    ws.onopen = () => {
+      callDurationTimerRef.current = setInterval(() => {
+        setCallDuration((prev) => prev + 1);
+      }, 1000);
+    };
+
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data as string);
+      switch (msg.type) {
+        case "speech_started": {
+          // 如果 AI 还在说话，停止播放
+          if (callAssistantIdRef.current) {
+            playerRef.current.stop();
+            setStreamingAudioId(null);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === callAssistantIdRef.current
+                  ? { ...m, streaming: false }
+                  : m,
+              ),
+            );
+            callAssistantIdRef.current = null;
+          }
+          // 新建用户消息气泡
+          const uid = `call-user-${Date.now()}`;
+          callUserIdRef.current = uid;
+          setMessages((prev) => [
+            ...prev,
+            { id: uid, role: "user", content: "", source: "call", streaming: true },
+          ]);
+          break;
+        }
+
+        case "speech_stopped":
+          break;
+
+        case "assistant_transcript":
+          // AI 回复的文字转录 → 更新 assistant 气泡
+          if (callAssistantIdRef.current) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === callAssistantIdRef.current
+                  ? { ...m, content: m.content + (msg.delta ?? "") }
+                  : m,
+              ),
+            );
+          } else {
+            // 还没创建 assistant 气泡（audio delta 还没到），先建一个
+            const aid = `call-asst-${Date.now()}`;
+            callAssistantIdRef.current = aid;
+            setStreamingAudioId(aid);
+            setMessages((prev) => [
+              ...prev,
+              { id: aid, role: "assistant", content: msg.delta ?? "", source: "call", streaming: true },
+            ]);
+          }
+          break;
+
+        case "assistant_transcript_done": {
+          // 转录结束，但如果没有 audio delta，这里创建 assistant 消息
+          if (!callAssistantIdRef.current) {
+            const aid = `call-asst-${Date.now()}`;
+            callAssistantIdRef.current = aid;
+            setMessages((prev) => [
+              ...prev,
+              { id: aid, role: "assistant", content: msg.transcript ?? "[空]", source: "call", streaming: false },
+            ]);
+          }
+          break;
+        }
+
+        // 用户语音 ASR 转写 → 更新用户气泡
+        case "user_transcript":
+          if (callUserIdRef.current) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === callUserIdRef.current
+                  ? { ...m, content: m.content + (msg.delta ?? "") }
+                  : m,
+              ),
+            );
+          }
+          break;
+
+        case "user_transcript_done":
+          if (callUserIdRef.current) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === callUserIdRef.current
+                  ? { ...m, content: msg.transcript ?? m.content, streaming: false }
+                  : m,
+              ),
+            );
+            callUserIdRef.current = null;
+          }
+          break;
+
+        case "assistant_audio": {
+          const b64 = msg.data as string;
+          const sr = (msg.sample_rate as number) ?? 24000;
+          playerRef.current.enqueuePcm16Base64(b64, sr);
+
+          // 创建或更新 assistant 消息
+          if (!callAssistantIdRef.current) {
+            const aid = `call-asst-${Date.now()}`;
+            callAssistantIdRef.current = aid;
+            setStreamingAudioId(aid);
+            // 收集 PCM 数据供回放
+            assistantAudioChunksRef.current.set(aid, [b64]);
+            assistantAudioSampleRateRef.current.set(aid, sr);
+            setMessages((prev) => [
+              ...prev,
+              { id: aid, role: "assistant", content: "", source: "call", streaming: true },
+            ]);
+          } else {
+            // 追加 PCM 数据
+            const arr = assistantAudioChunksRef.current.get(callAssistantIdRef.current) || [];
+            arr.push(b64);
+            assistantAudioChunksRef.current.set(callAssistantIdRef.current, arr);
+          }
+          break;
+        }
+
+        case "turn_end": {
+          const aid = callAssistantIdRef.current;
+          callAssistantIdRef.current = null;
+          setStreamingAudioId(null);
+          if (aid) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === aid ? { ...m, streaming: false } : m,
+              ),
+            );
+            // 将 PCM 转为 WAV 供回放
+            const chunks = assistantAudioChunksRef.current.get(aid);
+            if (chunks && chunks.length > 0) {
+              const sr =
+                assistantAudioSampleRateRef.current.get(aid) || 24000;
+              const wavBlob = pcm16Base64ToWavBlob(chunks, sr);
+              voiceAudioUrls.current.set(aid, URL.createObjectURL(wavBlob));
+              setVoiceUrlVersion((v) => v + 1);
+            }
+            assistantAudioChunksRef.current.delete(aid);
+            assistantAudioSampleRateRef.current.delete(aid);
+          }
+          break;
+        }
+
+        case "error":
+          console.error("Call error:", msg.message);
+          break;
+      }
+    };
+
+    ws.onclose = () => {
+      if (isCalling) stopCall();
+    };
+
+    ws.onerror = () => {
+      setToastMsg("通话连接失败");
+      stopCall();
+    };
+
+    // 获取麦克风
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      callMicStreamRef.current = stream;
+
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      await ctx.audioWorklet.addModule("/audio-worklet-processor.js");
+      const source = ctx.createMediaStreamSource(stream);
+      const node = new AudioWorkletNode(ctx, "audio-stream");
+
+      node.port.onmessage = (e) => {
+        if (e.data.type === "audio_chunk" && e.data.buffer) {
+          const b64 = int16ToBase64(e.data.buffer as ArrayBuffer);
+          try {
+            ws.send(JSON.stringify({ type: "audio_chunk", data: b64 }));
+          } catch { /* ws closed */ }
+        }
+      };
+      source.connect(node);
+    } catch {
+      setToastMsg("无法访问麦克风");
+      stopCall();
+    }
+  }, [sessionId, isCalling]);
+
+  const stopCall = useCallback(() => {
+    setIsCalling(false);
+    setBusy(false);
+    setStreamingAudioId(null);
+
+    if (callDurationTimerRef.current) {
+      clearInterval(callDurationTimerRef.current);
+      callDurationTimerRef.current = null;
+    }
+
+    // 清理通话 WS
+    if (callWsRef.current) {
+      try { callWsRef.current.send(JSON.stringify({ type: "hangup" })); } catch {}
+      callWsRef.current.close();
+      callWsRef.current = null;
+    }
+
+    // 清理麦克风
+    if (callMicStreamRef.current) {
+      callMicStreamRef.current.getTracks().forEach((t) => t.stop());
+      callMicStreamRef.current = null;
+    }
+
+    // 定型未完成的用户消息
+    if (callUserIdRef.current) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === callUserIdRef.current
+            ? { ...m, streaming: false, content: m.content || "[语音]" }
+            : m,
+        ),
+      );
+      callUserIdRef.current = null;
+    }
+
+    // 定型未完成的 assistant 消息
+    if (callAssistantIdRef.current) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === callAssistantIdRef.current
+            ? { ...m, streaming: false }
+            : m,
+        ),
+      );
+      callAssistantIdRef.current = null;
+    }
+
+    // 插入通话记录
+    if (callDuration > 0) {
+      const min = Math.floor(callDuration / 60);
+      const sec = callDuration % 60;
+      const content = `通话时长 ${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+      setMessages((prev) => [
+        ...prev,
+        { id: `call-summary-${Date.now()}`, role: "system", content, source: "call" },
+      ]);
+    }
+  }, [callDuration]);
+
   /* ---- 通话选项弹窗 & Toast ---- */
   const handleCallButton = useCallback(() => {
     setShowCallOptions(true);
   }, []);
 
   const handleVoiceCall = useCallback(() => {
-    if (!sessionId) return;
     setShowCallOptions(false);
-    navigate(`/call/${sessionId}`);
-  }, [sessionId, navigate]);
+    startCall();
+  }, [startCall]);
 
   const handleVideoCall = useCallback(() => {
     setShowCallOptions(false);
@@ -965,10 +1259,13 @@ export function ChatPage() {
       <Composer
         disabled={busy || !sessionId}
         isRecording={isRecording}
+        isCalling={isCalling}
+        callDuration={callDuration}
         onSendText={onSendText}
         onVoiceStart={onVoiceStart}
         onVoiceStop={handleVoiceStop}
         onCall={handleCallButton}
+        onHangup={stopCall}
         onSttError={(msg) => setToastMsg(msg)}
         voiceTextResult={voiceTextResult}
         onVoiceTextConsumed={() => setVoiceTextResult(null)}

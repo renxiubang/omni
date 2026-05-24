@@ -1,6 +1,7 @@
 export class PcmPlayer {
   private ctx: AudioContext | null = null;
-  private sampleRate = 16000;
+  /** 最近一次入队数据的采样率（用于创建匹配的 AudioContext） */
+  private dataSampleRate = 16000;
   private muted = false;
   /** 播放速率，默认 1.0，范围 0.5~2.0 */
   private rate = 1.0;
@@ -17,7 +18,9 @@ export class PcmPlayer {
   /** 标记是否已经开始播放（用于触发 onPlaybackStart） */
   private playbackStarted = false;
 
-  private log(_msg: string) {}
+  private log(msg: string) {
+    console.log(`[PcmPlayer] ${msg}`);
+  }
 
   /** 设置播放速率（0.5 ~ 2.0） */
   setPlaybackRate(rate: number) {
@@ -34,23 +37,18 @@ export class PcmPlayer {
 
   /** 在用户手势上下文中调用，提前创建并激活 AudioContext */
   async prepare(sampleRate = 16000): Promise<void> {
-    this.log(`prepare(sr=${sampleRate}) 当前ctx=${this.ctx ? this.ctx.state : 'null'} storedSr=${this.sampleRate}`);
+    this.log(`prepare(sr=${sampleRate}) 当前ctx=${this.ctx ? this.ctx.state : 'null'} storedSr=${this.dataSampleRate}`);
+    this.dataSampleRate = sampleRate;
     if (this.ctx) {
-      if (this.sampleRate !== sampleRate) {
-        this.log(`  采样率变化 ${this.sampleRate}→${sampleRate}，重建ctx`);
-        this.stop();
-      } else {
-        this.log(`  ctx已存在，state=${this.ctx.state}`);
-        if (this.ctx.state === "suspended") {
-          this.log(`  prepare: awaiting ctx.resume()...`);
-          await this.ctx.resume();
-          this.log(`  resume完成, state=${this.ctx.state}`);
-        }
-        return;
+      this.log(`  ctx已存在，state=${this.ctx.state}`);
+      if (this.ctx.state === "suspended") {
+        this.log(`  prepare: awaiting ctx.resume()...`);
+        await this.ctx.resume();
+        this.log(`  resume完成, state=${this.ctx.state}`);
       }
+      return;
     }
-    this.sampleRate = sampleRate;
-    this.ctx = new AudioContext({ sampleRate: this.sampleRate });
+    this.ctx = new AudioContext({ sampleRate: this.dataSampleRate });
     this.log(`  新建AudioContext(sr=${sampleRate}) state=${this.ctx.state}`);
     if (this.ctx.state === "suspended") {
       this.log(`  prepare: awaiting ctx.resume()...`);
@@ -59,18 +57,26 @@ export class PcmPlayer {
     }
   }
 
-  private async ensureCtx(): Promise<AudioContext> {
+  private async ensureCtx(dataSr: number): Promise<AudioContext> {
     if (!this.ctx) {
-      this.log(`ensureCtx: ctx为null，新建AudioContext(sr=${this.sampleRate})`);
-      this.ctx = new AudioContext({ sampleRate: this.sampleRate });
-      this.log(`  新建完成 state=${this.ctx.state}`);
+      this.log(`ensureCtx: ctx为null，新建AudioContext(sr=${dataSr})`);
+      this.ctx = new AudioContext({ sampleRate: dataSr });
+      this.dataSampleRate = dataSr;
+      this.log(`  新建完成 state=${this.ctx.state} actualSr=${this.ctx.sampleRate}`);
+    } else if (this.ctx.sampleRate !== dataSr) {
+      // AudioContext 实际采样率与数据不匹配，重建
+      this.log(`ensureCtx: 采样率不匹配 ctx.sampleRate=${this.ctx.sampleRate} dataSr=${dataSr}，重建ctx`);
+      this.stop();
+      this.ctx = new AudioContext({ sampleRate: dataSr });
+      this.dataSampleRate = dataSr;
+      this.log(`  重建完成 state=${this.ctx.state} actualSr=${this.ctx.sampleRate}`);
     }
     if (this.ctx.state === "suspended") {
       this.log(`  ensureCtx: awaiting ctx.resume()...`);
       await this.ctx.resume();
       this.log(`  ensureCtx resume完成 state=${this.ctx.state}`);
     }
-    this.log(`ensureCtx返回 state=${this.ctx.state} currentTime=${this.ctx.currentTime}`);
+    this.log(`ensureCtx返回 state=${this.ctx.state} currentTime=${this.ctx.currentTime} sampleRate=${this.ctx.sampleRate}`);
     return this.ctx;
   }
 
@@ -100,19 +106,20 @@ export class PcmPlayer {
   async enqueuePcm16Base64(b64: string, sampleRate = 16000): Promise<void> {
     this.seq++;
     const mySeq = this.seq;
-    this.log(`enqueue #${mySeq} muted=${this.muted} b64Len=${b64.length} dataSr=${sampleRate} storedSr=${this.sampleRate}`);
+    const actualSr = sampleRate;
+    this.log(`enqueue #${mySeq} muted=${this.muted} b64Len=${b64.length} dataSr=${actualSr} storedSr=${this.dataSampleRate}`);
 
     if (this.muted) {
       this.log(`  #${mySeq} 已静音，丢弃`);
       return;
     }
 
-    const useSr = sampleRate;
-    if (sampleRate !== this.sampleRate) {
-      this.log(`  #${mySeq} 采样率不匹配 data=${sampleRate} stored=${this.sampleRate}，使用dataRate创建buffer`);
+    if (!b64) {
+      this.log(`  #${mySeq} ⚠️ 空base64数据，跳过`);
+      return;
     }
 
-    const ctx = await this.ensureCtx();
+    const ctx = await this.ensureCtx(actualSr);
     this.log(`  #${mySeq} ctx.state=${ctx.state} ctx.sampleRate=${ctx.sampleRate} ctx.currentTime=${ctx.currentTime}`);
 
     // Base64 解码
@@ -167,7 +174,7 @@ export class PcmPlayer {
       this.log(`  #${mySeq} Float32范围: [${fmin.toFixed(4)}, ${fmax.toFixed(4)}]`);
     }
 
-    const buffer = ctx.createBuffer(1, floats.length, useSr);
+    const buffer = ctx.createBuffer(1, floats.length, actualSr);
     buffer.copyToChannel(floats, 0);
 
     // 验证 buffer 内容

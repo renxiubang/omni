@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import chat, sessions, translate, users, voice, voice_print, wordbook
 from app.config import settings
 from app.db import init_db
-from app.gateway import call_ws, stt_ws, webrtc_gateway
+from app.gateway import call_ws, stt_ws
 from app.persona_loader import persona_store
 
 logging.basicConfig(level=logging.INFO)
@@ -48,12 +48,12 @@ app.include_router(voice_print.router)
 app.include_router(wordbook.router)
 app.include_router(call_ws.router)
 app.include_router(stt_ws.router)
-app.include_router(webrtc_gateway.router)
+
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await webrtc_gateway.on_shutdown(app)
+    pass
 
 
 @app.get("/health")

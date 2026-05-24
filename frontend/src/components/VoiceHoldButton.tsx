@@ -12,13 +12,13 @@ type Zone = "none" | "cancel" | "text";
 
 export function VoiceHoldButton({ disabled, isRecording, size = "sm", onStart, onStop }: Props) {
   const [zone, setZone] = useState<Zone>("none");
-  const initialYRef = useRef(0);
+  const initialXRef = useRef(0);
   const recordingRef = useRef(false);
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
-    initialYRef.current = e.clientX;
+    initialXRef.current = e.clientX;
     recordingRef.current = true;
     setZone("none");
     onStart();
@@ -26,7 +26,7 @@ export function VoiceHoldButton({ disabled, isRecording, size = "sm", onStart, o
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (!recordingRef.current) return;
-    const offsetX = e.clientX - initialYRef.current;
+    const offsetX = e.clientX - initialXRef.current;
     if (offsetX < -60) {
       setZone("cancel"); // 左滑 → 取消
     } else if (offsetX > 60) {
@@ -40,7 +40,7 @@ export function VoiceHoldButton({ disabled, isRecording, size = "sm", onStart, o
     e.preventDefault();
     if (!recordingRef.current) return;
     recordingRef.current = false;
-    const offsetX = e.clientX - initialYRef.current;
+    const offsetX = e.clientX - initialXRef.current;
     let action: "send" | "cancel" | "text" = "send";
     if (offsetX < -60) {
       action = "cancel"; // 左滑松开 → 取消

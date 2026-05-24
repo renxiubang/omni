@@ -1,68 +1,39 @@
-class UtteranceProcessor extends AudioWorkletProcessor {
+/**
+ * AudioStreamProcessor — 麦克风音频流采集，不做 VAD（交给 DashScope 服务端）。
+ * 每 ~100ms 将 Float32 转为 Int16Array 并通过 postMessage 发送给主线程。
+ */
+class AudioStreamProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.state = "idle";
-    this.speechBuffer = [];
-    this.silenceFrames = 0;
-    this.speechFrames = 0;
-    this.energyThreshold = 0.015;
-    this.minSpeechFrames = 12;
-    this.maxSilenceFrames = 25;
+    this.buffer = [];
   }
 
   process(inputs) {
     const input = inputs[0]?.[0];
     if (!input) return true;
 
-    let energy = 0;
-    for (let i = 0; i < input.length; i++) energy += input[i] * input[i];
-    energy = Math.sqrt(energy / input.length);
+    // 收集 float32 样本
+    for (let i = 0; i < input.length; i++) {
+      this.buffer.push(input[i]);
+    }
 
-    const speaking = energy > this.energyThreshold;
-
-    if (this.state === "idle") {
-      if (speaking) {
-        this.state = "speaking";
-        this.speechFrames = 1;
-        this.silenceFrames = 0;
-        this.speechBuffer = [Float32Array.from(input)];
-        this.port.postMessage({ type: "speechStart" });
+    // 每 ~100ms 发送一次（1600 samples @ 16kHz = 3200 bytes）
+    const CHUNK_SIZE = 1600;
+    if (this.buffer.length >= CHUNK_SIZE) {
+      const chunk = this.buffer.splice(0, CHUNK_SIZE);
+      const int16 = new Int16Array(chunk.length);
+      for (let i = 0; i < chunk.length; i++) {
+        const s = Math.max(-1, Math.min(1, chunk[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
       }
-    } else if (this.state === "speaking") {
-      this.speechBuffer.push(Float32Array.from(input));
-      if (speaking) {
-        this.speechFrames++;
-        this.silenceFrames = 0;
-      } else {
-        this.silenceFrames++;
-        if (this.silenceFrames >= this.maxSilenceFrames && this.speechFrames >= this.minSpeechFrames) {
-          this.finalize();
-        }
-      }
+      // Transferable 零拷贝传输
+      this.port.postMessage(
+        { type: "audio_chunk", buffer: int16.buffer },
+        [int16.buffer]
+      );
     }
     return true;
   }
-
-  finalize() {
-    let total = 0;
-    for (const c of this.speechBuffer) total += c.length;
-    const combined = new Float32Array(total);
-    let offset = 0;
-    for (const c of this.speechBuffer) {
-      combined.set(c, offset);
-      offset += c.length;
-    }
-    const int16 = new Int16Array(combined.length);
-    for (let i = 0; i < combined.length; i++) {
-      const s = Math.max(-1, Math.min(1, combined[i]));
-      int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    this.port.postMessage({ type: "utterance_end", buffer: int16.buffer }, [int16.buffer]);
-    this.state = "idle";
-    this.speechBuffer = [];
-    this.speechFrames = 0;
-    this.silenceFrames = 0;
-  }
 }
 
-registerProcessor("utterance-processor", UtteranceProcessor);
+registerProcessor("audio-stream", AudioStreamProcessor);

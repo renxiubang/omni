@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     dashscope_audio_sample_rate: int = 24000
     # 统一输出采样率，与前端麦克风 AudioContext 一致 (Hz)
     output_sample_rate: int = 24000
-    # 百炼 Realtime API URL（WebRTC 方案使用）
+    # 百炼 Realtime API URL（WebSocket 方案使用）
     dashscope_realtime_url: str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
 
     @property

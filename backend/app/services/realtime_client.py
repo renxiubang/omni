@@ -1,7 +1,12 @@
+"""DashScope Realtime API WebSocket 客户端（VAD 模式）。
+
+直连百炼 Realtime API，服务端 VAD 自动检测语音起止，实时返回文本和音频。
+"""
+
 import asyncio
-import base64
 import json
 import logging
+from collections.abc import Awaitable, Callable
 
 import websockets
 
@@ -9,130 +14,160 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 队列哨兵：指示下游音频轨道重置 resampler 状态
-_RESET_AUDIO = "__RESET_AUDIO__"
 
+class RealtimeClient:
+    """DashScope Qwen-Omni Realtime WebSocket 客户端。
 
-class RealtimeAPIClient:
-    """百炼 Realtime API WebSocket 客户端"""
+    每个语音通话会话对应一个 RealtimeClient 实例。
+    通过回调机制将 DashScope 事件转发给上层（call_ws.py）。
+    """
 
-    def __init__(self, api_key: str, url: str):
-        self.api_key = api_key
-        self.url = url
-        self.ws = None
-        self.audio_queue: asyncio.Queue = asyncio.Queue()
-        self.text_delta_queue: asyncio.Queue = asyncio.Queue()
-        self.subtitle_queue: asyncio.Queue = asyncio.Queue()  # 字幕队列
-        self._listen_task = None
-        self._audio_seq = 0  # 递增计数器代替 base64(event_id)
+    def __init__(self, instructions: str) -> None:
+        self._instructions = instructions
+        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._recv_task: asyncio.Task | None = None
 
-    async def connect(self, system_prompt: str = "", voice: str | None = None):
-        """连接百炼 Realtime API 并发送会话配置"""
-        voice = voice or settings.omni_voice
-        headers = [("Authorization", f"Bearer {self.api_key}")]
+        # --- 回调 ---
+        self.on_speech_started: Callable[[], Awaitable[None]] | None = None
+        self.on_speech_stopped: Callable[[], Awaitable[None]] | None = None
+        # AI 回复的文字转录（response.audio_transcript.*）
+        self.on_transcript_delta: Callable[[str], Awaitable[None]] | None = None
+        self.on_transcript_done: Callable[[str], Awaitable[None]] | None = None
+        # 用户语音 ASR 转写（conversation.item.input_audio_transcription.*）
+        self.on_user_transcript_delta: Callable[[str], Awaitable[None]] | None = None
+        self.on_user_transcript_done: Callable[[str], Awaitable[None]] | None = None
+        self.on_audio_delta: Callable[[str], Awaitable[None]] | None = None
+        self.on_response_done: Callable[[], Awaitable[None]] | None = None
+        self.on_error: Callable[[str], Awaitable[None]] | None = None
 
-        self.ws = await websockets.connect(
-            self.url,
-            additional_headers=headers
-        )
+    async def connect(self) -> None:
+        """建立 WebSocket 连接并配置 VAD 模式会话。"""
+        url = settings.dashscope_realtime_url
+        extra_headers = {"Authorization": f"Bearer {settings.dashscope_api_key}"}
+        logger.info("RealtimeClient: connecting to %s", url)
 
-        session_update = {
-            "event_id": "event_init_001",
+        self._ws = await websockets.connect(url, additional_headers=extra_headers)
+
+        # 发送 session.update 配置 VAD 模式
+        await self._send({
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "voice": voice,
+                "voice": settings.omni_voice,
                 "input_audio_format": "pcm",
                 "output_audio_format": "pcm",
+                "instructions": self._instructions,
                 "turn_detection": {
-                    "type": "semantic_vad",  # 使用语义VAD，避免误触发打断
+                    "type": "server_vad",
                     "threshold": 0.5,
-                    "silence_duration_ms": 800  # 静音800ms后触发响应
+                    "silence_duration_ms": 800,
                 },
-                "instructions": system_prompt,
-                "enable_search": True,  # 启用联网搜索
-                "search_options": {"enable_source": True}  # 返回搜索结果来源
-            }
-        }
-        await self.ws.send(json.dumps(session_update))
-        logger.info("Realtime API session updated")
+                "input_audio_transcription": {
+                    "model": "qwen3-asr-flash-realtime",
+                },
+            },
+        })
 
-        self._listen_task = asyncio.create_task(self._listen())
+        # 启动事件接收循环
+        self._recv_task = asyncio.create_task(self._receive_loop())
 
-    async def _listen(self):
-        """监听百炼返回的事件"""
-        try:
-            async for message in self.ws:
-                data = json.loads(message)
-                msg_type = data.get("type", "")
+    async def send_audio(self, b64: str) -> None:
+        """发送 base64 编码的 PCM16 16kHz 音频块。"""
+        await self._send({
+            "type": "input_audio_buffer.append",
+            "audio": b64,
+        })
 
-                if msg_type == "response.audio.delta":
-                    pcm_bytes = base64.b64decode(data["delta"])
-                    await self.audio_queue.put(pcm_bytes)
-                elif msg_type == "response.audio_transcript.delta":
-                    # 字幕流式文本
-                    delta = data.get("delta", "")
-                    await self.subtitle_queue.put({"role": "assistant", "delta": delta, "done": False})
-                elif msg_type == "response.audio_transcript.done":
-                    # 字幕完整文本
-                    transcript = data.get("transcript", "")
-                    await self.subtitle_queue.put({"role": "assistant", "text": transcript, "done": True})
-                elif msg_type == "response.text.delta":
-                    delta = data.get("delta", "")
-                    await self.text_delta_queue.put(delta)
-                elif msg_type == "response.done":
-                    # 单次回复结束 → 通知音频轨道重置 resampler（避免跨轮次状态污染）
-                    logger.debug("Response done, sending resampler reset signal")
-                    await self.audio_queue.put(_RESET_AUDIO)
-                elif msg_type == "error":
-                    logger.error("Realtime API error: %s", data)
-                elif msg_type == "input_audio_buffer.speech_started":
-                    logger.info("VAD: user started speaking")
-                elif msg_type == "input_audio_buffer.speech_stopped":
-                    logger.info("VAD: user stopped speaking")
-                else:
-                    logger.debug("Realtime API event: type=%s", msg_type)
-        except Exception:
-            logger.exception("Listen error")
-        finally:
-            logger.info("Listen loop ended, sending None to queues")
-            await self.audio_queue.put(None)
-            await self.text_delta_queue.put(None)
-            await self.subtitle_queue.put(None)  # 通知字幕队列结束
+    async def cancel_response(self) -> None:
+        """打断当前正在生成的响应。"""
+        await self._send({"type": "response.cancel"})
 
-    async def send_audio(self, pcm_16k_bytes: bytes):
-        """发送音频给百炼"""
-        if self.ws and self.ws.close_code is None:
-            self._audio_seq += 1
-            event = {
-                "event_id": f"audio_{self._audio_seq:06d}",
-                "type": "input_audio_buffer.append",
-                "audio": base64.b64encode(pcm_16k_bytes).decode("utf-8")
-            }
-            await self.ws.send(json.dumps(event))
-        else:
-            logger.warning("Cannot send audio: WebSocket not connected")
-
-    async def receive_audio(self) -> bytes | None:
-        """接收百炼返回的音频（24kHz PCM）"""
-        return await self.audio_queue.get()
-
-    async def receive_text_delta(self) -> str | None:
-        """接收百炼返回的文本增量"""
-        return await self.text_delta_queue.get()
-
-    async def receive_subtitle(self) -> dict | None:
-        """接收字幕数据（用于实时字幕显示）"""
-        return await self.subtitle_queue.get()
-
-    async def close(self):
-        """关闭连接"""
-        if self._listen_task:
-            self._listen_task.cancel()
+    async def close(self) -> None:
+        """关闭连接。"""
+        if self._recv_task:
+            self._recv_task.cancel()
             try:
-                await self._listen_task
+                await self._recv_task
             except asyncio.CancelledError:
                 pass
-        if self.ws and self.ws.close_code is None:
-            await self.ws.close()
-            logger.info("Realtime API connection closed")
+            self._recv_task = None
+        if self._ws:
+            await self._ws.close()
+            self._ws = None
+
+    # ------------------------------------------------------------------ #
+    #  Internal
+    # ------------------------------------------------------------------ #
+
+    async def _send(self, msg: dict) -> None:
+        if self._ws:
+            await self._ws.send(json.dumps(msg, ensure_ascii=False))
+
+    async def _receive_loop(self) -> None:
+        try:
+            async for raw in self._ws:  # type: ignore[union-attr]
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                await self._handle_event(event)
+        except websockets.exceptions.ConnectionClosed:
+            logger.info("RealtimeClient: connection closed")
+        except Exception:
+            logger.exception("RealtimeClient: receive error")
+
+    async def _handle_event(self, event: dict) -> None:
+        etype = event.get("type", "")
+
+        match etype:
+            case "session.updated":
+                logger.info("RealtimeClient: session updated")
+
+            case "input_audio_buffer.speech_started":
+                logger.info("RealtimeClient: speech started (VAD)")
+                if self.on_speech_started:
+                    await self.on_speech_started()
+
+            case "input_audio_buffer.speech_stopped":
+                logger.info("RealtimeClient: speech stopped (VAD)")
+                if self.on_speech_stopped:
+                    await self.on_speech_stopped()
+
+            case "response.audio_transcript.delta":
+                delta = event.get("delta", "")
+                if delta and self.on_transcript_delta:
+                    await self.on_transcript_delta(delta)
+
+            case "response.audio_transcript.done":
+                transcript = event.get("transcript", "")
+                if self.on_transcript_done:
+                    await self.on_transcript_done(transcript)
+
+            case "response.audio.delta":
+                delta = event.get("delta", "")
+                if delta and self.on_audio_delta:
+                    await self.on_audio_delta(delta)
+
+            case "response.done":
+                logger.info("RealtimeClient: response done")
+                if self.on_response_done:
+                    await self.on_response_done()
+
+            case "conversation.item.input_audio_transcription.delta":
+                text = event.get("text", "")
+                if text and self.on_user_transcript_delta:
+                    await self.on_user_transcript_delta(text)
+
+            case "conversation.item.input_audio_transcription.completed":
+                transcript = event.get("transcript", "")
+                if self.on_user_transcript_done:
+                    await self.on_user_transcript_done(transcript)
+
+            case "error":
+                msg = event.get("message", "Unknown error")
+                logger.error("RealtimeClient: server error %s", msg)
+                if self.on_error:
+                    await self.on_error(msg)
+
+            case _:
+                logger.debug("RealtimeClient: unhandled event type=%s", etype)

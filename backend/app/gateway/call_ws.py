@@ -1,12 +1,17 @@
-import asyncio
-import base64
+"""语音通话 WebSocket 网关（DashScope Realtime VAD 模式）。
+
+前端持续发送音频块 → 后端转发给 DashScope Realtime API → DashScope VAD
+检测语音起止 → 实时返回文本/音频 → 后端转发给前端。
+"""
+
 import json
 import logging
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
+from app.persona_loader import persona_store
+from app.services.realtime_client import RealtimeClient
 from app.services.session_store import session_store
-from app.services.voice_service import process_voice_turn
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -25,45 +30,70 @@ async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
         await ws.close()
         return
 
-    current_task: asyncio.Task | None = None
+    # 获取人格 system prompt
+    persona = persona_store.get(session.persona or None)
+    instructions = persona.system_prompt
 
-    async def cancel_current() -> None:
-        nonlocal current_task
-        if current_task and not current_task.done():
-            current_task.cancel()
-            try:
-                await current_task
-            except asyncio.CancelledError:
-                pass
-        current_task = None
+    # 创建 RealtimeClient
+    client = RealtimeClient(instructions=instructions)
 
-    async def handle_utterance(pcm_bytes: bytes) -> None:
-        await cancel_current()
+    # ---- 设置 DashScope 事件回调 ----
+    async def on_speech_started() -> None:
+        await _send(ws, {"type": "speech_started"})
 
-        async def run() -> None:
-            async for ev in process_voice_turn(session_id, pcm_bytes, source="call"):
-                match ev.kind:
-                    case "user_final":
-                        await _send(ws, {"type": "user_final", "text": ev.text})
-                    case "token":
-                        await _send(ws, {"type": "assistant_token", "delta": ev.delta})
-                    case "audio":
-                        await _send(ws, {
-                            "type": "assistant_audio",
-                            "data": ev.audio_b64,
-                            "sample_rate": ev.sample_rate,
-                        })
-                    case "turn_end":
-                        await _send(ws, {"type": "turn_end"})
-                    case "error":
-                        await _send(ws, {"type": "error", "message": ev.error})
+    async def on_speech_stopped() -> None:
+        await _send(ws, {"type": "speech_stopped"})
 
-        nonlocal current_task
-        current_task = asyncio.create_task(run())
-        try:
-            await current_task
-        except asyncio.CancelledError:
-            pass
+    # 用户语音 ASR 转写
+    async def on_user_transcript_delta(delta: str) -> None:
+        await _send(ws, {"type": "user_transcript", "delta": delta})
+
+    async def on_user_transcript_done(transcript: str) -> None:
+        await _send(ws, {
+            "type": "user_transcript_done",
+            "transcript": transcript,
+        })
+
+    # AI 回复的文字转录
+    async def on_transcript_delta(delta: str) -> None:
+        await _send(ws, {"type": "assistant_transcript", "delta": delta})
+
+    async def on_transcript_done(transcript: str) -> None:
+        await _send(ws, {
+            "type": "assistant_transcript_done",
+            "transcript": transcript,
+        })
+
+    async def on_audio_delta(b64: str) -> None:
+        await _send(ws, {
+            "type": "assistant_audio",
+            "data": b64,
+            "sample_rate": 24000,
+        })
+
+    async def on_response_done() -> None:
+        await _send(ws, {"type": "turn_end"})
+
+    async def on_error(msg: str) -> None:
+        await _send(ws, {"type": "error", "message": msg})
+
+    client.on_speech_started = on_speech_started
+    client.on_speech_stopped = on_speech_stopped
+    client.on_user_transcript_delta = on_user_transcript_delta
+    client.on_user_transcript_done = on_user_transcript_done
+    client.on_transcript_delta = on_transcript_delta
+    client.on_transcript_done = on_transcript_done
+    client.on_audio_delta = on_audio_delta
+    client.on_response_done = on_response_done
+    client.on_error = on_error
+
+    try:
+        await client.connect()
+    except Exception as e:
+        logger.exception("RealtimeClient connect failed")
+        await _send(ws, {"type": "error", "message": str(e)})
+        await ws.close()
+        return
 
     try:
         while True:
@@ -71,21 +101,17 @@ async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
             data = json.loads(raw)
             msg_type = data.get("type")
 
-            if msg_type == "hangup":
-                await cancel_current()
+            if msg_type == "audio_chunk":
+                b64 = data.get("data", "")
+                if b64:
+                    await client.send_audio(b64)
+
+            elif msg_type == "hangup":
                 break
 
-            if msg_type == "utterance_end":
-                b64 = data.get("data", "")
-                if not b64:
-                    continue
-                pcm = base64.b64decode(b64)
-                if current_task and not current_task.done():
-                    await _send(ws, {"type": "turn_cancelled"})
-                await handle_utterance(pcm)
-
     except WebSocketDisconnect:
-        await cancel_current()
+        pass
     except Exception:
         logger.exception("call ws error")
-        await _send(ws, {"type": "error", "message": "Internal error"})
+    finally:
+        await client.close()

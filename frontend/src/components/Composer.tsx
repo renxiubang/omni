@@ -7,24 +7,31 @@ type InputMode = "text" | "voice";
 interface Props {
   disabled?: boolean;
   isRecording: boolean;
+  /** 是否正在通话 */
+  isCalling?: boolean;
+  /** 通话计时（秒） */
+  callDuration?: number;
   onSendText: (text: string) => void;
   onVoiceStart: () => void;
   onVoiceStop: (action: "send" | "cancel" | "text") => void;
   onCall: () => void;
+  /** 挂断回调 */
+  onHangup?: () => void;
   onSttError?: (msg: string) => void;
-  /** 外部传入的语音转文字结果，填入输入框 */
   voiceTextResult?: string | null;
-  /** voiceTextResult 被消费后的回调 */
   onVoiceTextConsumed?: () => void;
 }
 
 export function Composer({
   disabled,
   isRecording,
+  isCalling,
+  callDuration,
   onSendText,
   onVoiceStart,
   onVoiceStop,
   onCall,
+  onHangup,
   onSttError,
   voiceTextResult,
   onVoiceTextConsumed,
@@ -179,6 +186,35 @@ export function Composer({
       startListening();
     }
   }, [sttState, startListening, stopListening]);
+
+  const fmtDuration = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  };
+
+  // ---- 通话中：显示控制条 ----
+  if (isCalling) {
+    return (
+      <div className="shrink-0 flex items-center justify-between px-4 py-3 bg-[#07c160] text-white">
+        <span className="text-sm opacity-90">通话中</span>
+        <span className="text-lg font-mono tabular-nums tracking-wider">
+          {fmtDuration(callDuration ?? 0)}
+        </span>
+        <button
+          type="button"
+          onClick={onHangup}
+          className="w-10 h-10 rounded-full bg-red-500 flex items-center justify-center text-lg active:scale-95 transition-transform"
+          title="挂断"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="shrink-0 flex items-center gap-2 px-3 py-2 bg-[#f7f7f7] border-t border-[#ddd]">
