@@ -88,6 +88,10 @@ export function ChatPage() {
   const callAssistantIdRef = useRef<string | null>(null);
   /** 当前通话中用户消息 ID */
   const callUserIdRef = useRef<string | null>(null);
+  /** 当前轮用户语音开始时间（毫秒时间戳），用于计算语音时长 */
+  const callUserVoiceStartRef = useRef(0);
+  /** 当前轮用户 PCM 音频数据（base64 字符串），用于生成回放 WAV */
+  const callUserAudioChunksRef = useRef<string[]>([]);
 
   /** iOS Safari 键盘修复：动态跟踪 visualViewport，保持固定定位元素始终可见 */
   const [vvTop, setVvTop] = useState(0);
@@ -900,18 +904,43 @@ export function ChatPage() {
             );
             callAssistantIdRef.current = null;
           }
-          // 新建用户消息气泡
+          // 新建用户语音气泡（只显示语音条，无文字）
+          callUserVoiceStartRef.current = Date.now();
+          callUserAudioChunksRef.current = [];  // 重置音频收集
           const uid = `call-user-${Date.now()}`;
           callUserIdRef.current = uid;
           setMessages((prev) => [
             ...prev,
-            { id: uid, role: "user", content: "", source: "call", streaming: true },
+            { id: uid, role: "user", content: "[语音]", source: "call", streaming: true, duration: 0 },
           ]);
           break;
         }
 
-        case "speech_stopped":
+        case "speech_stopped": {
+          // 定型用户语音气泡，计算时长，生成 WAV 供回放
+          if (callUserIdRef.current && callUserVoiceStartRef.current) {
+            const sec = Math.max(1, Math.round((Date.now() - callUserVoiceStartRef.current) / 1000));
+            const uid = callUserIdRef.current;
+            // 将收集的 PCM 转为 WAV
+            const chunks = callUserAudioChunksRef.current;
+            if (chunks.length > 0) {
+              const wavBlob = pcm16Base64ToWavBlob(chunks, 16000);
+              voiceAudioUrls.current.set(uid, URL.createObjectURL(wavBlob));
+              setVoiceUrlVersion((v) => v + 1);
+            }
+            callUserAudioChunksRef.current = [];
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === uid
+                  ? { ...m, streaming: false, duration: sec }
+                  : m,
+              ),
+            );
+            callUserIdRef.current = null;
+            callUserVoiceStartRef.current = 0;
+          }
           break;
+        }
 
         case "assistant_transcript":
           // AI 回复的文字转录 → 更新 assistant 气泡
@@ -947,32 +976,6 @@ export function ChatPage() {
           }
           break;
         }
-
-        // 用户语音 ASR 转写 → 更新用户气泡
-        case "user_transcript":
-          if (callUserIdRef.current) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === callUserIdRef.current
-                  ? { ...m, content: m.content + (msg.delta ?? "") }
-                  : m,
-              ),
-            );
-          }
-          break;
-
-        case "user_transcript_done":
-          if (callUserIdRef.current) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === callUserIdRef.current
-                  ? { ...m, content: msg.transcript ?? m.content, streaming: false }
-                  : m,
-              ),
-            );
-            callUserIdRef.current = null;
-          }
-          break;
 
         case "assistant_audio": {
           const b64 = msg.data as string;
@@ -1059,7 +1062,10 @@ export function ChatPage() {
 
       node.port.onmessage = (e) => {
         if (e.data.type === "audio_chunk" && e.data.buffer) {
-          const b64 = int16ToBase64(e.data.buffer as ArrayBuffer);
+          const buffer = e.data.buffer as ArrayBuffer;
+          const b64 = int16ToBase64(buffer);
+          // 收集 PCM base64 数据供语音回放
+          callUserAudioChunksRef.current.push(b64);
           try {
             ws.send(JSON.stringify({ type: "audio_chunk", data: b64 }));
           } catch { /* ws closed */ }
@@ -1097,14 +1103,27 @@ export function ChatPage() {
 
     // 定型未完成的用户消息
     if (callUserIdRef.current) {
+      const sec = callUserVoiceStartRef.current
+        ? Math.max(1, Math.round((Date.now() - callUserVoiceStartRef.current) / 1000))
+        : 1;
+      const uid = callUserIdRef.current;
+      // 将收集的 PCM 转为 WAV 供回放
+      const chunks = callUserAudioChunksRef.current;
+      if (chunks.length > 0) {
+        const wavBlob = pcm16Base64ToWavBlob(chunks, 16000);
+        voiceAudioUrls.current.set(uid, URL.createObjectURL(wavBlob));
+        setVoiceUrlVersion((v) => v + 1);
+      }
+      callUserAudioChunksRef.current = [];
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === callUserIdRef.current
-            ? { ...m, streaming: false, content: m.content || "[语音]" }
+          m.id === uid
+            ? { ...m, streaming: false, content: m.content || "[语音]", duration: m.duration || sec }
             : m,
         ),
       );
       callUserIdRef.current = null;
+      callUserVoiceStartRef.current = 0;
     }
 
     // 定型未完成的 assistant 消息

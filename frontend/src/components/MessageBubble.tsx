@@ -59,7 +59,7 @@ export function MessageBubble({
   onToggleTranslation,
 }: Props) {
   const isUser = message.role === "user";
-  const isVoice = message.source === "voice" && isUser;
+  const isVoice = (message.source === "voice" || message.source === "call") && isUser;
   const isAssistant = message.role === "assistant";
   const isCallRecord = message.source === "call" && message.role === "system";
   const dur = message.duration ?? 0;
