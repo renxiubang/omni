@@ -167,3 +167,37 @@ export async function sttTranscribe(blob: Blob, filename: string): Promise<strin
   const data = await res.json();
   return data.text as string;
 }
+
+export interface UserInfo {
+  id: number;
+  username: string;
+  created_at: string;
+}
+
+/**
+ * 用户登录（模拟登录，无需密码）
+ */
+export async function login(username: string): Promise<UserInfo> {
+  const res = await fetch(`${API_BASE}/api/users/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Login failed");
+  }
+  return res.json();
+}
+
+/**
+ * 获取用户信息
+ */
+export async function getUserInfo(username: string): Promise<UserInfo> {
+  const res = await fetch(`${API_BASE}/api/users/me?username=${encodeURIComponent(username)}`);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to get user info");
+  }
+  return res.json();
+}

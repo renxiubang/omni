@@ -18,6 +18,8 @@ import { pcm16Base64ToWavBlob } from "../audio/pcmToWav";
 import { SettingsDrawer } from "./SettingsPage";
 import { Toast } from "../components/Toast";
 import { CallOptionsPopup } from "../components/CallOptionsPopup";
+import { WordExplanationPopup } from "../components/WordExplanationPopup";
+import { WordbookDrawer } from "../components/WordbookDrawer";
 import type { ChatMessage } from "../types/chat";
 
 export function ChatPage() {
@@ -69,6 +71,7 @@ export function ChatPage() {
   /** 正在加载翻译的消息 ID */
   const [translationLoadingId, setTranslationLoadingId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showWordbook, setShowWordbook] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [showCallOptions, setShowCallOptions] = useState(false);
   /** 语音转文字结果：非空时将填入输入框 */
@@ -77,6 +80,10 @@ export function ChatPage() {
   /** iOS Safari 键盘修复：动态跟踪 visualViewport，保持固定定位元素始终可见 */
   const [vvTop, setVvTop] = useState(0);
   const [vvHeight, setVvHeight] = useState(window.innerHeight);
+
+  /** 单词解释功能：选中的单词和浮框位置 */
+  const [selectedWord, setSelectedWord] = useState<string | null>(null);
+  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   useEffect(() => {
     const sync = () => {
@@ -94,6 +101,44 @@ export function ChatPage() {
       vv?.removeEventListener("resize", sync);
       vv?.removeEventListener("scroll", sync);
     };
+  }, []);
+
+  // 监听文本选中事件（单词解释功能）
+  useEffect(() => {
+    const handleMouseUp = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) {
+        setSelectedWord(null);
+        return;
+      }
+
+      const selectedText = selection.toString().trim();
+      if (!selectedText) {
+        setSelectedWord(null);
+        return;
+      }
+
+      // 检查是否为英文文本
+      if (!/^[a-zA-Z\s\-']+$/.test(selectedText)) {
+        setSelectedWord(null);
+        return;
+      }
+
+      // 获取选中文本的位置
+      const range = selection.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+
+      // 设置浮框位置（在选中文本上方）
+      setPopupPosition({
+        x: rect.left + window.scrollX,
+        y: rect.top + window.scrollY - 10
+      });
+
+      setSelectedWord(selectedText);
+    };
+
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => document.removeEventListener('mouseup', handleMouseUp);
   }, []);
 
   // 从路由 state 读取通话时长，挂断后显示通话记录
@@ -677,24 +722,46 @@ export function ChatPage() {
           {currentPersonaName}
         </span>
 
-        {/* 右侧：persona 下拉框 */}
-        {personas.length > 0 && (
-          <select
-            className="ml-auto text-xs bg-white border border-[#d6d6d6] rounded px-2 py-1 max-w-[130px] truncate"
-            value={selectedPersona}
-            onChange={(e) => {
-              void handleChangePersona(e.target.value);
-            }}
-            disabled={busy}
+        {/* 右侧：persona 下拉框 + 单词本按钮 */}
+        <div className="ml-auto flex items-center gap-1">
+          {personas.length > 0 && (
+            <select
+              className="text-xs bg-white border border-[#d6d6d6] rounded px-2 py-1 max-w-[130px] truncate"
+              value={selectedPersona}
+              onChange={(e) => {
+                void handleChangePersona(e.target.value);
+              }}
+              disabled={busy}
+            >
+              <option value="">默认</option>
+              {personas.map((p) => (
+                <option key={p.key} value={p.key}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            type="button"
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-[#d6d6d6] transition-colors"
+            onClick={() => setShowWordbook(true)}
+            aria-label="单词本"
           >
-            <option value="">默认</option>
-            {personas.map((p) => (
-              <option key={p.key} value={p.key}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        )}
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#333"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+            </svg>
+          </button>
+        </div>
       </header>
       <MessageList
         messages={messages}
@@ -731,6 +798,21 @@ export function ChatPage() {
         onClose={() => setShowCallOptions(false)}
         onVoiceCall={handleVoiceCall}
         onVideoCall={handleVideoCall}
+      />
+
+      {/* 单词解释浮框 */}
+      {selectedWord && (
+        <WordExplanationPopup
+          selectedText={selectedWord}
+          position={popupPosition}
+          onClose={() => setSelectedWord(null)}
+        />
+      )}
+
+      {/* 单词本侧滑抽屉 */}
+      <WordbookDrawer
+        visible={showWordbook}
+        onClose={() => setShowWordbook(false)}
       />
     </div>
   );

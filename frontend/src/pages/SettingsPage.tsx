@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useAuth } from "../context/AuthContext";
 
 const STORAGE_KEY = "omni_speech_rate";
 const DEFAULT_RATE = 1.0;
@@ -33,6 +34,8 @@ interface SettingsDrawerProps {
 
 export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
   const [rate, setRate] = useState(loadRate);
+  const { logout } = useAuth();
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   // 每次打开时从 localStorage 重新加载
   useEffect(() => {
@@ -43,6 +46,15 @@ export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
     setRate(v);
     saveRate(v);
   }, []);
+
+  // Handle logout
+  const handleLogout = useCallback(() => {
+    setShowLogoutConfirm(false);
+    logout();
+    onClose();
+    // Redirect to login page
+    window.location.href = "/login";
+  }, [logout, onClose]);
 
   return (
     <>
@@ -127,6 +139,47 @@ export function SettingsDrawer({ visible, onClose }: SettingsDrawerProps) {
             ))}
           </div>
         </div>
+
+        {/* 退出登录按钮 */}
+        <div className="mx-3 mt-3 bg-white rounded-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowLogoutConfirm(true)}
+            className="w-full px-4 py-3 text-[15px] text-[#ff4d4f] text-left hover:bg-[#fff2f0] transition-colors"
+          >
+            退出登录
+          </button>
+        </div>
+
+        {/* 退出登录确认弹窗 */}
+        {showLogoutConfirm && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50">
+            <div className="bg-white rounded-lg p-6 max-w-[280px] w-full mx-4">
+              <div className="text-[17px] font-medium text-[#111] mb-2 text-center">
+                确定要退出登录吗？
+              </div>
+              <div className="text-[13px] text-[#999] mb-6 text-center">
+                退出后需要重新登录
+              </div>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowLogoutConfirm(false)}
+                  className="flex-1 h-10 rounded-lg bg-[#f0f0f0] text-[15px] text-[#333] hover:bg-[#e0e0e0] transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="flex-1 h-10 rounded-lg bg-[#ff4d4f] text-[15px] text-white hover:bg-[#ff3333] transition-colors"
+                >
+                  确定
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
