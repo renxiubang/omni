@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,7 +11,44 @@ from app.db import init_db
 from app.gateway import call_ws, stt_ws
 from app.persona_loader import persona_store
 
-logging.basicConfig(level=logging.INFO)
+# ── 日志配置：控制台 + 按天分隔的文件 ──
+_log_dir = Path(__file__).parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+
+# 移除默认的 Handler，避免重复
+_root_logger.handlers.clear()
+
+# 控制台 Handler
+_console = logging.StreamHandler()
+_console.setLevel(logging.INFO)
+_console.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+_root_logger.addHandler(_console)
+
+# 按天分隔的文件 Handler（保留 30 天）
+_file_handler = logging.handlers.TimedRotatingFileHandler(
+    filename=_log_dir / "app.log",
+    when="midnight",
+    interval=1,
+    backupCount=30,
+    encoding="utf-8",
+)
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+)
+_root_logger.addHandler(_file_handler)
+
+# 将 uvicorn 的 access/error 日志也写入文件
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    _uv_logger = logging.getLogger(_name)
+    _uv_logger.handlers.clear()
+    _uv_logger.addHandler(_file_handler)
+    _uv_logger.propagate = False  # 避免重复输出到根 logger
+
+logging.info("Log directory: %s", _log_dir)
 
 # 启动时加载人格配置
 _personas_path = settings.personas_path or str(

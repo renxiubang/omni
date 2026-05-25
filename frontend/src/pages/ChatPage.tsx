@@ -729,6 +729,8 @@ export function ChatPage() {
 
   /** 点击语音条播放 / 暂停 */
   const handlePlayVoice = useCallback((msgId: string) => {
+    const msg = messages.find((m) => m.id === msgId);
+    console.log("[CallPage] handlePlayVoice msgId=%s role=%s source=%s hasUrl=%s", msgId, msg?.role, msg?.source, voiceAudioUrls.current.has(msgId));
     // 场景 A：正在流式播放中 → 中止播放（不影响语音合成，继续收集 PCM 数据）
     if (streamingAudioId === msgId) {
       playerRef.current.mute();
@@ -914,6 +916,7 @@ export function ChatPage() {
       const msg = JSON.parse(ev.data as string);
       switch (msg.type) {
         case "speech_started": {
+          console.log("[CallPage] speech_started, creating user bubble");
           // 如果 AI 还在说话，停止播放
           if (callAssistantIdRef.current) {
             playerRef.current.stop();
@@ -948,15 +951,19 @@ export function ChatPage() {
 
         case "speech_stopped": {
           // 定型用户语音气泡，计算时长，生成 WAV 供回放
-          if (callUserIdRef.current && callUserVoiceStartRef.current) {
+          const uid = callUserIdRef.current;
+          const chunks = callUserAudioChunksRef.current;
+          console.log("[CallPage] speech_stopped uid=%s chunks=%d voiceStart=%s", uid, chunks.length, callUserVoiceStartRef.current);
+          if (uid && callUserVoiceStartRef.current) {
             const sec = Math.max(1, Math.round((Date.now() - callUserVoiceStartRef.current) / 1000));
-            const uid = callUserIdRef.current;
             // 将收集的 PCM 转为 WAV
-            const chunks = callUserAudioChunksRef.current;
             if (chunks.length > 0) {
               const wavBlob = pcm16Base64ToWavBlob(chunks, 16000);
+              console.log("[CallPage] Created user WAV blob size=%d for uid=%s", wavBlob.size, uid);
               voiceAudioUrls.current.set(uid, URL.createObjectURL(wavBlob));
               setVoiceUrlVersion((v) => v + 1);
+            } else {
+              console.warn("[CallPage] speech_stopped but no audio chunks for uid=%s", uid);
             }
             callUserAudioChunksRef.current = [];
             setMessages((prev) =>
@@ -1144,8 +1151,9 @@ export function ChatPage() {
         ? Math.max(1, Math.round((Date.now() - callUserVoiceStartRef.current) / 1000))
         : 1;
       const uid = callUserIdRef.current;
-      // 将收集的 PCM 转为 WAV 供回放
       const chunks = callUserAudioChunksRef.current;
+      console.log("[CallPage] stopCall: finalizing user message uid=%s chunks=%d", uid, chunks.length);
+      // 将收集的 PCM 转为 WAV 供回放
       if (chunks.length > 0) {
         const wavBlob = pcm16Base64ToWavBlob(chunks, 16000);
         voiceAudioUrls.current.set(uid, URL.createObjectURL(wavBlob));

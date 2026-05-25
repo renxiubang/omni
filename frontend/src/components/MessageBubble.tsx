@@ -109,9 +109,10 @@ export function MessageBubble({
                 />
               </div>
             )}
-            {/* 翻译按钮 — 无论有无音频始终可见 */}
+            {/* 翻译按钮 — 无论有无音频始终右上 */}
             {onToggleTranslation && (
-              <button
+              <div className="ml-auto">
+                <button
                 onClick={(e) => {
                   e.stopPropagation();
                   onToggleTranslation();
@@ -125,6 +126,7 @@ export function MessageBubble({
               >
                 {translationLoading ? "译中..." : "译"}
               </button>
+              </div>
             )}
           </div>
         )}

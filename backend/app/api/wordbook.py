@@ -1,6 +1,7 @@
 """Wordbook-related API routes for Omni Chat application."""
 
 import json
+import logging
 import re
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -13,6 +14,7 @@ from app.db import (
     get_user_by_id,
 )
 from app.services.omni_client import omni_client
+from app.config import settings
 
 router = APIRouter(prefix="/api/wordbook", tags=["wordbook"])
 
@@ -282,8 +284,12 @@ async def pronounce_word(request: WordPronounceRequest):
         raise HTTPException(status_code=400, detail="Word cannot be empty")
     
     try:
+        import dashscope
         from dashscope.audio.tts import SpeechSynthesizer
         from fastapi.responses import Response
+        
+        # 设置 DashScope API Key（.env 中 DASHSCOPE_API_KEY 已由 config 读取）
+        dashscope.api_key = settings.dashscope_api_key
         
         # Call DashScope TTS API
         result = SpeechSynthesizer.call(
@@ -293,9 +299,8 @@ async def pronounce_word(request: WordPronounceRequest):
             sample_rate=16000
         )
         
-        # Get audio data
-        if result.get('audio'):
-            audio_data = result['audio']
+        if result.get_audio_data():
+            audio_data = result.get_audio_data()
             
             # Return audio as WAV file
             return Response(
@@ -313,13 +318,13 @@ async def pronounce_word(request: WordPronounceRequest):
             
     except ImportError:
         # Fallback: if dashscope TTS is not available, return error
-        print("dashscope library not available for TTS")
+        logging.error("dashscope library not available for TTS")
         raise HTTPException(
             status_code=501,
             detail="TTS service not available"
         )
     except Exception as e:
-        print(f"Error generating pronunciation: {e}")
+        logging.error("Error generating pronunciation: %s", e)
         raise HTTPException(
             status_code=500,
             detail="Failed to generate pronunciation audio"
