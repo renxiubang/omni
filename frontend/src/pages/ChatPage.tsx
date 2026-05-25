@@ -16,6 +16,7 @@ import { Composer } from "../components/Composer";
 import { MessageList } from "../components/MessageList";
 import { PcmPlayer } from "../audio/pcmPlayer";
 import { pcm16Base64ToWavBlob } from "../audio/pcmToWav";
+import { encodeBase64 } from "../audio/base64";
 import { SettingsDrawer } from "./SettingsPage";
 import { Toast } from "../components/Toast";
 import { CallOptionsPopup } from "../components/CallOptionsPopup";
@@ -92,6 +93,8 @@ export function ChatPage() {
   const callAssistantIdRef = useRef<string | null>(null);
   /** 当前通话中用户消息 ID */
   const callUserIdRef = useRef<string | null>(null);
+  /** 通话轮次计数，用于诊断 */
+  const callTurnRef = useRef(0);
   /** 当前轮用户语音开始时间（毫秒时间戳），用于计算语音时长 */
   const callUserVoiceStartRef = useRef(0);
   /** 当前轮用户 PCM 音频数据（base64 字符串），用于生成回放 WAV */
@@ -880,10 +883,7 @@ export function ChatPage() {
   /* ---- 内联通话逻辑 ---- */
 
   const int16ToBase64 = (buffer: ArrayBuffer): string => {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    return btoa(binary);
+    return encodeBase64(new Uint8Array(buffer));
   };
 
   const startCall = useCallback(async () => {
@@ -939,7 +939,11 @@ export function ChatPage() {
           }
           // 新建用户语音气泡（只显示语音条，无文字）
           callUserVoiceStartRef.current = Date.now();
-          callUserAudioChunksRef.current = [];  // 重置音频收集
+          // 只保留 VAD 检测延迟窗口内的最近几个 chunk（约 2 秒），丢弃前面的空白间隙
+          const MAX_PREFIX_CHUNKS = 6;
+          if (callUserAudioChunksRef.current.length > MAX_PREFIX_CHUNKS) {
+            callUserAudioChunksRef.current = callUserAudioChunksRef.current.slice(-MAX_PREFIX_CHUNKS);
+          }
           const uid = `call-user-${Date.now()}`;
           callUserIdRef.current = uid;
           setMessages((prev) => [
@@ -959,7 +963,24 @@ export function ChatPage() {
             // 将收集的 PCM 转为 WAV
             if (chunks.length > 0) {
               const wavBlob = pcm16Base64ToWavBlob(chunks, 16000);
-              console.log("[CallPage] Created user WAV blob size=%d for uid=%s", wavBlob.size, uid);
+              callTurnRef.current += 1;
+              console.log("[CallPage] Created user WAV blob size=%d for uid=%s turn=%d", wavBlob.size, uid, callTurnRef.current);
+              // 诊断：解析前 5 个 chunk 和后 5 个 chunk 的 PCM 幅度
+              const sampleChunks = chunks.length <= 10 ? chunks : [...chunks.slice(0, 5), ...chunks.slice(-5)];
+              import("../audio/base64").then(({ decodeBase64: db }) => {
+                for (let ci = 0; ci < sampleChunks.length; ci++) {
+                  const isTail = ci >= 5 || chunks.length <= 10 && ci >= chunks.length - 5;
+                  const decoded = db(sampleChunks[ci]);
+                  const int16 = new Int16Array(decoded.buffer);
+                  let peak = 0;
+                  for (let i = 0; i < int16.length; i++) {
+                    if (Math.abs(int16[i]) > peak) peak = Math.abs(int16[i]);
+                  }
+                  console.log("[CallPage]   chunk[%s%d] samples=%d peak=%d rms~=%d",
+                    isTail ? "tail-" : "", isTail ? ci - (chunks.length <= 10 ? chunks.length - 5 : 5) : ci,
+                    int16.length, peak, Math.round(Math.sqrt(int16.reduce((s, v) => s + v * v, 0) / int16.length)));
+                }
+              });
               voiceAudioUrls.current.set(uid, URL.createObjectURL(wavBlob));
               setVoiceUrlVersion((v) => v + 1);
             } else {
@@ -1050,7 +1071,12 @@ export function ChatPage() {
         case "turn_end": {
           const aid = callAssistantIdRef.current;
           callAssistantIdRef.current = null;
-          setStreamingAudioId(null);
+          // 等 PcmPlayer 队列播完再清除流式标记，避免波形提前消失
+          if (playerRef.current.isPlaying()) {
+            void playerRef.current.waitForFinish().then(() => setStreamingAudioId(null));
+          } else {
+            setStreamingAudioId(null);
+          }
           if (aid) {
             setMessages((prev) =>
               prev.map((m) =>

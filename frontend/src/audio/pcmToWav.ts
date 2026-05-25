@@ -1,14 +1,19 @@
 /**
  * 将 base64 PCM16 数据块拼接并转为 WAV Blob，用于浏览器原生 Audio 回放。
  */
+import { decodeBase64 } from "./base64";
+
 export function pcm16Base64ToWavBlob(
   chunks: string[],
   sampleRate: number,
 ): Blob {
-  const combined = chunks.join("");
-  const raw = atob(combined);
-  const pcmBytes = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) pcmBytes[i] = raw.charCodeAt(i);
+  // 逐块解码 base64 并拼接原始字节，避免 btoa/atob 二进制字符串兼容性问题
+  const allBytes: number[] = [];
+  for (const chunk of chunks) {
+    const decoded = decodeBase64(chunk);
+    for (let i = 0; i < decoded.length; i++) allBytes.push(decoded[i]);
+  }
+  const pcmBytes = new Uint8Array(allBytes);
 
   const numChannels = 1;
   const bitsPerSample = 16;
