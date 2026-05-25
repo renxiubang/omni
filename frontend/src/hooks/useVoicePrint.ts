@@ -28,9 +28,19 @@ export function useVoicePrint(userId: number) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 音量状态 (0-100)
+  const [volumeLevel, setVolumeLevel] = useState(0);
+
   // MediaRecorder 引用
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
+  const recordedMimeTypeRef = useRef<string>("audio/webm");
+
+  // 音量分析相关引用
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const isRecordingRef = useRef(false);
 
   /**
    * 开始录音
@@ -42,10 +52,20 @@ export function useVoicePrint(userId: number) {
       // 获取麦克风权限
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // 创建 MediaRecorder
-      const mediaRecorder = new MediaRecorder(stream);
+      // 创建 MediaRecorder，使用浏览器支持的格式
+      let mimeType = "audio/webm";
+      if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+        mimeType = "audio/webm;codecs=opus";
+      } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+        mimeType = "audio/mp4";
+      } else if (MediaRecorder.isTypeSupported("audio/webm")) {
+        mimeType = "audio/webm";
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
       recordedChunksRef.current = [];
+      recordedMimeTypeRef.current = mediaRecorder.mimeType;
 
       // 处理数据可用事件
       mediaRecorder.ondataavailable = (event) => {
@@ -56,9 +76,10 @@ export function useVoicePrint(userId: number) {
 
       // 处理录音停止事件
       mediaRecorder.onstop = () => {
-        // 创建 Blob
+        // 使用实际的 mimeType 创建 Blob
+        const actualMimeType = recordedMimeTypeRef.current;
         const audioBlob = new Blob(recordedChunksRef.current, {
-          type: "audio/webm",
+          type: actualMimeType,
         });
         setAudioBlob(audioBlob);
 
@@ -70,8 +91,39 @@ export function useVoicePrint(userId: number) {
         stream.getTracks().forEach((track) => track.stop());
       };
 
+      // 设置音量分析
+      try {
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        audioContextRef.current = audioContext;
+        analyserRef.current = analyser;
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        const updateVolume = () => {
+          if (!isRecordingRef.current) return;
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const average = sum / dataArray.length;
+          // 将音量映射到 0-100 范围（加入阈值避免噪声抖动）
+          const raw = (average / 255) * 100;
+          const volume = raw < 5 ? 0 : Math.min(100, Math.round(raw));
+          setVolumeLevel(volume);
+          animationFrameRef.current = requestAnimationFrame(updateVolume);
+        };
+        animationFrameRef.current = requestAnimationFrame(updateVolume);
+      } catch (analyserErr) {
+        console.warn("Failed to setup volume analyser:", analyserErr);
+      }
+
       // 开始录音
       mediaRecorder.start();
+      isRecordingRef.current = true;
       setIsRecording(true);
     } catch (err) {
       console.error("Failed to start recording:", err);
@@ -89,7 +141,19 @@ export function useVoicePrint(userId: number) {
     ) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
+      isRecordingRef.current = false;
     }
+
+    // 清理音量分析
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    setVolumeLevel(0);
   }, []);
 
   /**
@@ -238,6 +302,9 @@ export function useVoicePrint(userId: number) {
     isRecording,
     audioBlob,
     audioUrl,
+
+    // 音量
+    volumeLevel,
 
     // 播放状态
     isPlaying,

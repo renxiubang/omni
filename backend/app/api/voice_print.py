@@ -135,7 +135,7 @@ async def enroll_voice_print(
         )
         profile["has_embedding"] = has_embedding
         if has_embedding and embedding_json:
-            profile["embedding"] = json.loads(embedding_json)
+            profile["embedding"] = [float(v) for v in json.loads(embedding_json)]
         return profile
     except ValueError as e:
         # Clean up saved files if database operation fails

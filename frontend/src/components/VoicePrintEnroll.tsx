@@ -39,6 +39,7 @@ export function VoicePrintEnroll({
     isPlaying,
     isLoading,
     error,
+    volumeLevel,
     startRecording,
     stopRecording,
     playAudio,
@@ -242,7 +243,7 @@ export function VoicePrintEnroll({
         </div>
 
         {/* 录音按钮 */}
-        <div className="mb-8">
+        <div className="mb-4">
           <button
             type="button"
             onClick={isRecording ? handleStopRecording : handleStartRecording}
@@ -279,6 +280,53 @@ export function VoicePrintEnroll({
             )}
           </button>
         </div>
+
+        {/* 音量条 */}
+        {isRecording && (
+          <div className="w-full max-w-[240px] mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[12px] text-[#999]">音量</span>
+              <span className="text-[12px] text-[#999]">{volumeLevel}%</span>
+            </div>
+            <div className="w-full h-2 bg-[#e0e0e0] rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-100"
+                style={{
+                  width: `${volumeLevel}%`,
+                  backgroundColor:
+                    volumeLevel > 60
+                      ? "#ff4444"
+                      : volumeLevel > 30
+                        ? "#ffaa00"
+                        : "#07c160",
+                }}
+              />
+            </div>
+            {/* 音量波形条 */}
+            <div className="flex items-end justify-center gap-[3px] h-8 mt-2">
+              {Array.from({ length: 20 }).map((_, i) => {
+                // 模拟波形效果，根据音量值计算高度
+                const center = 10;
+                const dist = Math.abs(i - center);
+                const baseHeight = volumeLevel > 0 ? 4 : 2;
+                const height =
+                  baseHeight +
+                  Math.max(0, (volumeLevel / 100) * 24 * (1 - dist / center));
+                return (
+                  <div
+                    key={i}
+                    className="w-[4px] rounded-full transition-all duration-75"
+                    style={{
+                      height: `${height}px`,
+                      backgroundColor: volumeLevel > 0 ? "#07c160" : "#e0e0e0",
+                      opacity: volumeLevel > 0 ? 0.4 + (height / 28) * 0.6 : 0.3,
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* 录制状态 */}
         {isRecording && (

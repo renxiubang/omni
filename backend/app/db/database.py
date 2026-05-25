@@ -299,7 +299,7 @@ def create_voice_profile(
             "updated_at": now,
         }
         if embedding:
-            result["embedding"] = json.loads(embedding)
+            result["embedding"] = [float(v) for v in json.loads(embedding)]
         return result
     except sqlite3.IntegrityError:
         conn.rollback()
@@ -328,8 +328,14 @@ def get_user_voice_profiles(user_id: int) -> List[Dict[str, Any]]:
     for row in rows:
         profile = dict(row)
         profile["audio_samples"] = json.loads(profile["audio_samples"])
+        profile["has_embedding"] = False
         if profile.get("embedding"):
-            profile["embedding"] = json.loads(profile["embedding"])
+            try:
+                parsed = json.loads(profile["embedding"])
+                profile["embedding"] = [float(v) for v in parsed]
+                profile["has_embedding"] = True
+            except (json.JSONDecodeError, TypeError, ValueError):
+                profile["embedding"] = None
         profiles.append(profile)
 
     return profiles
@@ -353,8 +359,14 @@ def get_voice_profile_by_id(profile_id: int, user_id: int) -> Optional[Dict[str,
     if row:
         profile = dict(row)
         profile["audio_samples"] = json.loads(profile["audio_samples"])
+        profile["has_embedding"] = False
         if profile.get("embedding"):
-            profile["embedding"] = json.loads(profile["embedding"])
+            try:
+                parsed = json.loads(profile["embedding"])
+                profile["embedding"] = [float(v) for v in parsed]
+                profile["has_embedding"] = True
+            except (json.JSONDecodeError, TypeError, ValueError):
+                profile["embedding"] = None
         return profile
     return None
 
@@ -438,8 +450,14 @@ def update_voice_profile(
     if row:
         profile = dict(row)
         profile["audio_samples"] = json.loads(profile["audio_samples"])
+        profile["has_embedding"] = False
         if profile.get("embedding"):
-            profile["embedding"] = json.loads(profile["embedding"])
+            try:
+                parsed = json.loads(profile["embedding"])
+                profile["embedding"] = [float(v) for v in parsed]
+                profile["has_embedding"] = True
+            except (json.JSONDecodeError, TypeError, ValueError):
+                profile["embedding"] = None
         return profile
     return None
 
@@ -462,6 +480,10 @@ def get_all_embeddings_for_user(user_id: int) -> List[Dict[str, Any]]:
     for row in rows:
         profile = dict(row)
         if profile.get("embedding"):
-            profile["embedding"] = json.loads(profile["embedding"])
-            results.append(profile)
+            try:
+                parsed = json.loads(profile["embedding"])
+                profile["embedding"] = [float(v) for v in parsed]
+                results.append(profile)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
     return results

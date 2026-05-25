@@ -49,13 +49,13 @@ def _model_available() -> bool:
 
 def extract_embedding(audio_path: str) -> Optional[List[float]]:
     """
-    从音频文件提取 192 维声纹嵌入向量。
+    From audio file extract 192-dim speaker embedding vector.
 
     Args:
-        audio_path: 16kHz WAV 文件路径
+        audio_path: 16kHz WAV file path
 
     Returns:
-        192 维浮点数列表，失败时返回 None
+        192-dim float list, or None on failure
     """
     if not _model_available():
         logger.warning("FunASR not available; cannot extract embedding")
@@ -71,9 +71,18 @@ def extract_embedding(audio_path: str) -> Optional[List[float]]:
         result = model.generate(input=str(path))
         if result and len(result) > 0 and "spk_embedding" in result[0]:
             emb = result[0]["spk_embedding"]
-            if isinstance(emb, np.ndarray):
-                return emb.tolist()
-            return list(emb)
+            # Convert to plain Python list regardless of source type
+            # (FunASR may return np.ndarray, torch.Tensor, or list)
+            if hasattr(emb, "tolist"):
+                emb = emb.tolist()
+            elif not isinstance(emb, list):
+                emb = list(emb)
+            # Flatten nested list if the model returns 2D output (e.g. [[0.1, ...]])
+            if emb and isinstance(emb[0], (list,)):
+                emb = [float(v) for sublist in emb for v in sublist]
+            else:
+                emb = [float(v) for v in emb]
+            return emb
         logger.error("No embedding returned from FunASR for %s", audio_path)
         return None
     except Exception as e:
