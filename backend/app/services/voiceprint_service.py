@@ -66,6 +66,13 @@ def extract_embedding(audio_path: str) -> Optional[List[float]]:
         logger.error("Audio file not found: %s", audio_path)
         return None
 
+    # Log audio file info for debugging format mismatch issues
+    file_size_kb = path.stat().st_size / 1024
+    logger.info(
+        "Extracting embedding from: %s (format=%s, size=%.1f KB)",
+        path.name, path.suffix, file_size_kb,
+    )
+
     try:
         model = _get_model()
         result = model.generate(input=str(path))
@@ -82,6 +89,7 @@ def extract_embedding(audio_path: str) -> Optional[List[float]]:
                 emb = [float(v) for sublist in emb for v in sublist]
             else:
                 emb = [float(v) for v in emb]
+            logger.info("Embedding extracted: %d dims from %s", len(emb), path.name)
             return emb
         logger.error("No embedding returned from FunASR for %s", audio_path)
         return None

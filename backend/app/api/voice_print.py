@@ -6,6 +6,7 @@ identification, diarization and management.
 """
 import json
 import os
+import subprocess
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -18,6 +19,35 @@ from app.db import database
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _convert_to_wav(input_path: str) -> str:
+    """将任意音频文件转为 16kHz mono 16-bit WAV，返回 WAV 路径。
+    
+    浏览器 MediaRecorder 在 Safari 产生 audio/mp4，在 Chrome 产生 audio/webm。
+    FunASR CAM++ 模型需要 16kHz WAV 输入才有一致的 embedding 质量。
+    这里统一转为 WAV，与通话音频（PCM16→WAV）保持一致。
+    """
+    wav_path = Path(input_path).with_suffix(".wav")
+    if wav_path.exists():
+        return str(wav_path)
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-ar", "16000",
+        "-ac", "1",
+        "-sample_fmt", "s16",
+        str(wav_path),
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, check=True, timeout=30)
+        return str(wav_path)
+    except subprocess.CalledProcessError as e:
+        logger.error("ffmpeg convert failed: %s", e.stderr.decode(errors="replace")[:500])
+        return input_path  # fallback to original
+    except FileNotFoundError:
+        logger.warning("ffmpeg not found; falling back to original format")
+        return input_path
 
 router = APIRouter(prefix="/api/voice-print", tags=["voice-print"])
 
@@ -74,11 +104,12 @@ async def enroll_voice_print(
             detail="Maximum 5 audio samples allowed"
         )
 
-    # Save audio files
+    # Save audio files (convert to 16kHz WAV for consistent embedding quality)
     saved_paths = []
     for i, audio_file in enumerate(audio_samples):
         # Generate unique filename
-        filename = f"user_{user_id}_{name}_{i}_{audio_file.filename}"
+        original_name = audio_file.filename or f"sample_{i}.webm"
+        filename = f"user_{user_id}_{name}_{i}_{original_name}"
         file_path = VOICE_PRINT_DIR / filename
 
         # Save file
@@ -86,7 +117,18 @@ async def enroll_voice_print(
             with open(file_path, "wb") as f:
                 content = await audio_file.read()
                 f.write(content)
-            saved_paths.append(str(file_path))
+            # Convert to 16kHz mono WAV for consistent embedding quality
+            wav_path = _convert_to_wav(str(file_path))
+            if wav_path != str(file_path):
+                # Remove original compressed file, keep only WAV
+                try:
+                    os.remove(str(file_path))
+                except OSError:
+                    pass
+                saved_paths.append(wav_path)
+                logger.info("Converted audio to WAV: %s -> %s", filename, Path(wav_path).name)
+            else:
+                saved_paths.append(str(file_path))
         except Exception as e:
             # Clean up already saved files
             for path in saved_paths:
