@@ -19,6 +19,8 @@ class StoredMessage:
 @dataclass
 class Session:
     id: str
+    user_id: int | None = None
+    voiceprint_verification: bool = False
     messages: list[StoredMessage] = field(default_factory=list)
     persona: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -33,13 +35,14 @@ class SessionStore:
         persona: str | None = None,
         wordbook_training: bool = False,
         user_id: int | None = None,
+        voiceprint_verification: bool = False,
     ) -> Session:
         """创建新会话，可选注入人格 system prompt 和单词本训练约束。"""
         from app.config import settings
         from app.persona_loader import persona_store as ps
         from app.services.wordbook_trainer import wordbook_trainer as wt
 
-        session = Session(id=str(uuid.uuid4()))
+        session = Session(id=str(uuid.uuid4()), user_id=user_id, voiceprint_verification=voiceprint_verification)
         self._sessions[session.id] = session
 
         # 单词本训练模式：约束指令优先于人格 prompt，使模型优先处理

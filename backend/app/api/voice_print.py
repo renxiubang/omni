@@ -1,10 +1,12 @@
 """
 Voice Print API module.
 
-This module provides API endpoints for voice print enrollment and management.
+This module provides API endpoints for voice print enrollment, verification,
+identification, diarization and management.
 """
 import json
 import os
+import logging
 from pathlib import Path
 from typing import List, Optional
 
@@ -14,6 +16,8 @@ from pydantic import BaseModel
 
 from app.db import database
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/voice-print", tags=["voice-print"])
 
@@ -28,6 +32,8 @@ class VoiceProfileResponse(BaseModel):
     name: str
     audio_samples: List[str]
     enrollment_text: str
+    has_embedding: bool = False
+    embedding: Optional[List[float]] = None
     created_at: str
     updated_at: str
 
@@ -93,6 +99,31 @@ async def enroll_voice_print(
                 detail=f"Failed to save audio file: {str(e)}"
             )
 
+    # 使用 FunASR 提取声纹嵌入
+    embedding_json = None
+    has_embedding = False
+    try:
+        from app.services.voiceprint_service import extract_embedding, average_embeddings
+        embeddings = []
+        for path in saved_paths:
+            emb = extract_embedding(path)
+            if emb is not None:
+                embeddings.append(emb)
+        if len(embeddings) >= 2:
+            avg_emb = average_embeddings(embeddings)
+            embedding_json = json.dumps(avg_emb)
+            has_embedding = True
+            logger.info("Voiceprint embedding extracted for user %d profile '%s'", user_id, name)
+        else:
+            logger.warning(
+                "Only %d/%d embeddings extracted for user %d profile '%s'",
+                len(embeddings), len(saved_paths), user_id, name,
+            )
+    except ImportError:
+        logger.warning("FunASR not available; voiceprint embedding skipped")
+    except Exception as e:
+        logger.error("Failed to extract voiceprint embedding: %s", e)
+
     # Create voice profile in database
     try:
         profile = database.create_voice_profile(
@@ -100,7 +131,11 @@ async def enroll_voice_print(
             name=name,
             audio_samples=saved_paths,
             enrollment_text=enrollment_text,
+            embedding=embedding_json,
         )
+        profile["has_embedding"] = has_embedding
+        if has_embedding and embedding_json:
+            profile["embedding"] = json.loads(embedding_json)
         return profile
     except ValueError as e:
         # Clean up saved files if database operation fails
@@ -278,3 +313,197 @@ async def get_audio_sample(
             status_code=500,
             detail=f"Failed to get audio sample: {str(e)}"
         )
+
+
+# --- Voiceprint Verification / Identification / Diarization ---
+
+class VerifyRequest(BaseModel):
+    user_id: int
+    profile_id: int
+
+
+class VerifyResponse(BaseModel):
+    match: bool
+    score: float
+    profile_name: str
+
+
+@router.post("/verify", response_model=VerifyResponse)
+async def verify_voice_print(
+    user_id: int = Form(...),
+    profile_id: int = Form(...),
+    audio: UploadFile = File(...),
+):
+    """
+    1:1 声纹验证：判断上传语音是否匹配指定声纹档案。
+
+    Args:
+        user_id: 用户 ID
+        profile_id: 目标声纹档案 ID
+        audio: 待验证的音频文件 (WAV, 16kHz)
+    """
+    try:
+        from app.services.voiceprint_service import extract_embedding, verify_embedding
+    except ImportError:
+        raise HTTPException(status_code=501, detail="Voiceprint service not available")
+
+    # 获取目标声纹档案
+    profile = database.get_voice_profile_by_id(profile_id, user_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Voice profile not found")
+    if not profile.get("embedding"):
+        raise HTTPException(
+            status_code=400,
+            detail="Voice profile has no embedding; re-enroll required",
+        )
+
+    # 保存临时音频文件
+    tmp_path = VOICE_PRINT_DIR / f"verify_{user_id}_{profile_id}.wav"
+    try:
+        content = await audio.read()
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+
+        # 提取验证音频的嵌入
+        test_emb = extract_embedding(str(tmp_path))
+        if test_emb is None:
+            raise HTTPException(status_code=422, detail="Failed to extract embedding from audio")
+
+        # 比对
+        match, score = verify_embedding(
+            test_emb,
+            profile["embedding"],
+            threshold=settings.voiceprint_threshold,
+        )
+        return VerifyResponse(
+            match=match,
+            score=round(score, 4),
+            profile_name=profile["name"],
+        )
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+class IdentifyResponse(BaseModel):
+    matched_profile_id: Optional[int] = None
+    matched_profile_name: Optional[str] = None
+    score: float = 0.0
+    candidates: List[dict] = []
+
+
+@router.post("/identify", response_model=IdentifyResponse)
+async def identify_voice_print(
+    user_id: int = Form(...),
+    audio: UploadFile = File(...),
+):
+    """
+    1:N 声纹识别：在用户所有已录入声纹中查找最匹配的。
+
+    Args:
+        user_id: 用户 ID
+        audio: 待识别的音频文件 (WAV, 16kHz)
+    """
+    try:
+        from app.services.voiceprint_service import (
+            extract_embedding,
+            identify_embedding,
+            cosine_similarity,
+        )
+    except ImportError:
+        raise HTTPException(status_code=501, detail="Voiceprint service not available")
+
+    # 获取用户所有有声纹嵌入的档案
+    candidates = database.get_all_embeddings_for_user(user_id)
+    if not candidates:
+        raise HTTPException(status_code=404, detail="No voice profiles with embeddings found")
+
+    # 保存临时音频文件
+    tmp_path = VOICE_PRINT_DIR / f"identify_{user_id}.wav"
+    try:
+        content = await audio.read()
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+
+        # 提取嵌入
+        test_emb = extract_embedding(str(tmp_path))
+        if test_emb is None:
+            raise HTTPException(status_code=422, detail="Failed to extract embedding from audio")
+
+        # 识别
+        cand_list = [(c["id"], c["name"], c["embedding"]) for c in candidates]
+        result = identify_embedding(
+            test_emb, cand_list,
+            threshold=settings.voiceprint_threshold,
+        )
+
+        # 计算所有候选的分数（用于调试）
+        all_candidates = []
+        for pid, pname, p_emb in cand_list:
+            s = cosine_similarity(test_emb, p_emb)
+            all_candidates.append({
+                "profile_id": pid,
+                "profile_name": pname,
+                "score": round(s, 4),
+            })
+        all_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+        if result:
+            return IdentifyResponse(
+                matched_profile_id=result[0],
+                matched_profile_name=result[1],
+                score=round(result[2], 4),
+                candidates=all_candidates,
+            )
+        return IdentifyResponse(candidates=all_candidates)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+class DiarizeSegment(BaseModel):
+    start: float
+    end: float
+    speaker: str
+
+
+class DiarizeResponse(BaseModel):
+    segments: List[DiarizeSegment]
+
+
+@router.post("/diarize", response_model=DiarizeResponse)
+async def diarize_audio(
+    user_id: int = Form(...),
+    audio: UploadFile = File(...),
+):
+    """
+    说话人分割：标注音频中"谁在什么时候说话"。
+
+    Args:
+        user_id: 用户 ID
+        audio: 待分割的音频文件 (WAV, 16kHz)
+    """
+    try:
+        from app.services.diarization_service import diarize as do_diarize
+    except ImportError:
+        raise HTTPException(status_code=501, detail="Diarization service not available")
+
+    tmp_path = VOICE_PRINT_DIR / f"diarize_{user_id}.wav"
+    try:
+        content = await audio.read()
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+
+        segments = do_diarize(str(tmp_path))
+        return DiarizeResponse(
+            segments=[DiarizeSegment(**s) for s in segments]
+        )
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass

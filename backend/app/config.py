@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # 百炼 Realtime API URL（WebSocket 方案使用）
     dashscope_realtime_url: str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime"
 
+    # 声纹识别配置
+    voiceprint_enabled: bool = True
+    voiceprint_threshold: float = 0.6
+    voiceprint_model: str = "iic/speech_campplus_sv_zh_en_16k-common_advanced"
+    voiceprint_lazy_load: bool = True
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

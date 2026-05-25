@@ -10,4 +10,6 @@ export interface ChatMessage {
   duration?: number;
   /** 翻译后的中文文本 */
   translation?: string;
+  /** 声纹识别结果：说话人名称 */
+  speakerName?: string;
 }

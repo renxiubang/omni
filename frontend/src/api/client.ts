@@ -18,11 +18,13 @@ export async function createSession(
   persona?: string,
   wordbookTraining?: boolean,
   userId?: number,
+  voiceprintVerification?: boolean,
 ): Promise<string> {
   const params = new URLSearchParams();
   if (persona) params.set("persona", persona);
   if (wordbookTraining) params.set("wordbook_training", "true");
   if (userId) params.set("user_id", String(userId));
+  if (voiceprintVerification) params.set("voiceprint_verification", "true");
   const qs = params.toString();
   const url = `${API_BASE}/api/sessions${qs ? "?" + qs : ""}`;
   const res = await fetch(url, { method: "POST" });

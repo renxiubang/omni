@@ -60,12 +60,19 @@ def init_db() -> None:
             name TEXT NOT NULL,
             audio_samples TEXT NOT NULL,
             enrollment_text TEXT NOT NULL,
+            embedding TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(user_id, name),
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
     """)
+
+    # 兼容旧表：尝试添加 embedding 列
+    try:
+        cursor.execute("ALTER TABLE voice_profiles ADD COLUMN embedding TEXT")
+    except sqlite3.OperationalError:
+        pass  # 列已存在，忽略
 
     # Create index for faster queries
     cursor.execute("""
@@ -263,6 +270,7 @@ def create_voice_profile(
     name: str,
     audio_samples: List[str],
     enrollment_text: str,
+    embedding: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new voice profile."""
     conn = get_db_connection()
@@ -274,14 +282,14 @@ def create_voice_profile(
     try:
         cursor.execute("""
             INSERT INTO voice_profiles
-            (user_id, name, audio_samples, enrollment_text, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (user_id, name, audio_samples_json, enrollment_text, now, now))
+            (user_id, name, audio_samples, enrollment_text, embedding, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, name, audio_samples_json, enrollment_text, embedding, now, now))
 
         conn.commit()
         profile_id = cursor.lastrowid
 
-        return {
+        result = {
             "id": profile_id,
             "user_id": user_id,
             "name": name,
@@ -290,6 +298,9 @@ def create_voice_profile(
             "created_at": now,
             "updated_at": now,
         }
+        if embedding:
+            result["embedding"] = json.loads(embedding)
+        return result
     except sqlite3.IntegrityError:
         conn.rollback()
         raise ValueError(f"Voice profile '{name}' already exists for this user")
@@ -303,7 +314,7 @@ def get_user_voice_profiles(user_id: int) -> List[Dict[str, Any]]:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT id, user_id, name, audio_samples, enrollment_text,
+        SELECT id, user_id, name, audio_samples, enrollment_text, embedding,
                created_at, updated_at
         FROM voice_profiles
         WHERE user_id = ?
@@ -317,6 +328,8 @@ def get_user_voice_profiles(user_id: int) -> List[Dict[str, Any]]:
     for row in rows:
         profile = dict(row)
         profile["audio_samples"] = json.loads(profile["audio_samples"])
+        if profile.get("embedding"):
+            profile["embedding"] = json.loads(profile["embedding"])
         profiles.append(profile)
 
     return profiles
@@ -328,7 +341,7 @@ def get_voice_profile_by_id(profile_id: int, user_id: int) -> Optional[Dict[str,
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT id, user_id, name, audio_samples, enrollment_text,
+        SELECT id, user_id, name, audio_samples, enrollment_text, embedding,
                created_at, updated_at
         FROM voice_profiles
         WHERE id = ? AND user_id = ?
@@ -340,6 +353,8 @@ def get_voice_profile_by_id(profile_id: int, user_id: int) -> Optional[Dict[str,
     if row:
         profile = dict(row)
         profile["audio_samples"] = json.loads(profile["audio_samples"])
+        if profile.get("embedding"):
+            profile["embedding"] = json.loads(profile["embedding"])
         return profile
     return None
 
@@ -411,7 +426,7 @@ def update_voice_profile(
 
     # Get updated profile
     cursor.execute("""
-        SELECT id, user_id, name, audio_samples, enrollment_text,
+        SELECT id, user_id, name, audio_samples, enrollment_text, embedding,
                created_at, updated_at
         FROM voice_profiles
         WHERE id = ? AND user_id = ?
@@ -423,5 +438,30 @@ def update_voice_profile(
     if row:
         profile = dict(row)
         profile["audio_samples"] = json.loads(profile["audio_samples"])
+        if profile.get("embedding"):
+            profile["embedding"] = json.loads(profile["embedding"])
         return profile
     return None
+
+
+def get_all_embeddings_for_user(user_id: int) -> List[Dict[str, Any]]:
+    """Get all voice profiles with embeddings for a user (only those that have embeddings)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, user_id, name, embedding
+        FROM voice_profiles
+        WHERE user_id = ? AND embedding IS NOT NULL
+    """, (user_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    results = []
+    for row in rows:
+        profile = dict(row)
+        if profile.get("embedding"):
+            profile["embedding"] = json.loads(profile["embedding"])
+            results.append(profile)
+    return results

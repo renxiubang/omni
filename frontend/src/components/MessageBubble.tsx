@@ -132,18 +132,25 @@ export function MessageBubble({
         )}
 
         {isVoice ? (
-          <div className="flex items-center gap-2 min-w-[80px]">
-            <span className="text-xs text-[#666] tabular-nums min-w-[28px] text-right">
-              {isPlaying ? (
-                <span className="inline-block w-2 h-2 bg-[#07c160] rounded-full animate-pulse" />
-              ) : dur > 0 ? (
-                `${dur}″`
-              ) : (
-                "..."
-              )}
-            </span>
-            <VoiceWave color="#07c160" animating={isPlaying} />
-          </div>
+          <>
+            {message.speakerName && (
+              <div className="text-[11px] text-[#07c160] mb-1 font-medium">
+                {message.speakerName}
+              </div>
+            )}
+            <div className="flex items-center gap-2 min-w-[80px]">
+              <span className="text-xs text-[#666] tabular-nums min-w-[28px] text-right">
+                {isPlaying ? (
+                  <span className="inline-block w-2 h-2 bg-[#07c160] rounded-full animate-pulse" />
+                ) : dur > 0 ? (
+                  `${dur}″`
+                ) : (
+                  "..."
+                )}
+              </span>
+              <VoiceWave color="#07c160" animating={isPlaying} />
+            </div>
+          </>
         ) : (
           <>
             {message.content || (message.streaming ? "..." : "")}

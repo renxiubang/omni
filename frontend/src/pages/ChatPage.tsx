@@ -525,7 +525,8 @@ export function ChatPage() {
       .catch(() => setPersonas([]));
     // 创建会话
     const trainingEnabled = localStorage.getItem("omni_wordbook_training") === "true";
-    createSession("english_teacher", trainingEnabled, currentUser?.id).then(async (id) => {
+    const voiceprintVerification = localStorage.getItem("omni_voiceprint_enabled") === "true";
+    createSession("english_teacher", trainingEnabled, currentUser?.id, voiceprintVerification).then(async (id) => {
       setSessionId(id);
       try {
         const hist = await loadMessages(id);
@@ -564,7 +565,8 @@ export function ChatPage() {
       setVoiceUrlVersion(0);
       // 创建新会话
       const trainingEnabled = localStorage.getItem("omni_wordbook_training") === "true";
-      const id = await createSession(personaKey || undefined, trainingEnabled, currentUser?.id);
+      const voiceprintVerification = localStorage.getItem("omni_voiceprint_enabled") === "true";
+      const id = await createSession(personaKey || undefined, trainingEnabled, currentUser?.id, voiceprintVerification);
       setSessionId(id);
       setMessages([]);
       setBusy(false);
@@ -1101,6 +1103,24 @@ export function ChatPage() {
         case "error":
           console.error("Call error:", msg.message);
           break;
+
+        case "speaker_identified":
+          // 声纹识别结果：在当前用户语音气泡上标注说话人
+          if (callUserIdRef.current) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === callUserIdRef.current
+                  ? { ...m, speakerName: (msg.profile_name as string) || undefined }
+                  : m,
+              ),
+            );
+          }
+          break;
+
+        case "speaker_rejected": {
+          setToastMsg("说话人未识别，请先录入声纹");
+          break;
+        }
       }
     };
 
