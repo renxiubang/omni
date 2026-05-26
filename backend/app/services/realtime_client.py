@@ -78,6 +78,13 @@ class RealtimeClient:
             "audio": b64,
         })
 
+    async def send_image(self, jpeg_b64: str) -> None:
+        """发送 base64 JPEG 图像帧到服务端（1张/秒）。"""
+        await self._send({
+            "type": "input_image_buffer.append",
+            "image": jpeg_b64,
+        })
+
     async def cancel_response(self) -> None:
         """打断当前正在生成的响应。"""
         await self._send({"type": "response.cancel"})

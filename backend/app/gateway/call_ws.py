@@ -227,6 +227,11 @@ async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
                     if voiceprint_enabled:
                         current_turn_chunks.append(b64)
 
+            elif msg_type == "image_chunk":
+                jpeg_b64 = data.get("data", "")
+                if jpeg_b64:
+                    await client.send_image(jpeg_b64)
+
             elif msg_type == "hangup":
                 break
 

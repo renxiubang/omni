@@ -40,7 +40,7 @@ export function CallOptionsPopup({
         {/* 视频通话（占位） */}
         <button
           type="button"
-          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[#f5f5f5] transition-colors text-[17px] opacity-50 cursor-not-allowed"
+          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[#f5f5f5] transition-colors text-[17px]"
           onClick={() => { onClose(); onVideoCall(); }}
         >
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

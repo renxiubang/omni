@@ -20,6 +20,7 @@ import { encodeBase64 } from "../audio/base64";
 import { SettingsDrawer } from "./SettingsPage";
 import { Toast } from "../components/Toast";
 import { CallOptionsPopup } from "../components/CallOptionsPopup";
+import { VideoCallView } from "../components/VideoCallView";
 import { WordExplanationPopup } from "../components/WordExplanationPopup";
 import { WordbookDrawer } from "../components/WordbookDrawer";
 import type { ChatMessage } from "../types/chat";
@@ -85,6 +86,7 @@ export function ChatPage() {
 
   /** ---- 通话内联状态 ---- */
   const [isCalling, setIsCalling] = useState(false);
+  const [isVideoCalling, setIsVideoCalling] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const callWsRef = useRef<WebSocket | null>(null);
   const callMicStreamRef = useRef<MediaStream | null>(null);
@@ -1185,6 +1187,8 @@ export function ChatPage() {
       callWsRef.current = null;
     }
 
+    setIsVideoCalling(false);
+
     // 清理麦克风
     if (callMicStreamRef.current) {
       callMicStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -1253,8 +1257,9 @@ export function ChatPage() {
 
   const handleVideoCall = useCallback(() => {
     setShowCallOptions(false);
-    setToastMsg("视频通话功能暂未实现");
-  }, []);
+    setIsVideoCalling(true);
+    startCall();
+  }, [startCall]);
 
   /** TTS 相关状态已移除，统一使用模型音频输出 */
   const audioAvailableIds = new Set(voiceAudioUrls.current.keys());
@@ -1382,6 +1387,14 @@ export function ChatPage() {
         onVoiceCall={handleVoiceCall}
         onVideoCall={handleVideoCall}
       />
+
+      {/* 视频通话摄像头小窗 */}
+      {isVideoCalling && (
+        <VideoCallView
+          wsRef={callWsRef}
+          onClose={() => setIsVideoCalling(false)}
+        />
+      )}
 
       {/* 单词解释浮框 */}
       {selectedWord && (
