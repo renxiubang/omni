@@ -96,6 +96,7 @@ class OmniClient:
             modalities=["text"],
             stream=True,
             stream_options={"include_usage": True},
+            extra_body={"enable_search": True, "search_strategy": "agent"},
         )
         async for chunk in stream:
             if not chunk.choices:
@@ -115,6 +116,7 @@ class OmniClient:
             audio={"voice": settings.omni_voice, "format": settings.omni_audio_format},
             stream=True,
             stream_options={"include_usage": True},
+            extra_body={"enable_search": True, "search_strategy": "agent"},
         )
         async for chunk in stream:
             if not chunk.choices:
