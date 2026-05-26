@@ -228,7 +228,7 @@ export function SettingsDrawer({ visible, onClose, personas, selectedPersona, on
               <button
                 key={p.key}
                 type="button"
-                className={`flex-1 h-8 rounded-full text-[13px] font-medium transition-colors ${
+                className={`px-4 h-8 rounded-full text-[13px] font-medium whitespace-nowrap transition-colors ${
                   selectedPersona === p.key
                     ? "bg-[#07c160] text-white"
                     : "bg-[#f0f0f0] text-[#333] hover:bg-[#e0e0e0]"
