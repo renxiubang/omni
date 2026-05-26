@@ -528,7 +528,7 @@ export function ChatPage() {
     // 创建会话
     const trainingEnabled = localStorage.getItem("omni_wordbook_training") === "true";
     const voiceprintVerification = localStorage.getItem("omni_voiceprint_enabled") === "true";
-    createSession("english_teacher", trainingEnabled, currentUser?.id, voiceprintVerification).then(async (id) => {
+    createSession(selectedPersona, trainingEnabled, currentUser?.id, voiceprintVerification).then(async (id) => {
       setSessionId(id);
       try {
         const hist = await loadMessages(id);
@@ -890,7 +890,7 @@ export function ChatPage() {
     return encodeBase64(new Uint8Array(buffer));
   };
 
-  const startCall = useCallback(async () => {
+  const startCall = useCallback(async (video = false) => {
     if (!sessionId || isCalling) return;
     setIsCalling(true);
     setCallDuration(0);
@@ -906,7 +906,7 @@ export function ChatPage() {
     setPlayingVoiceId(null);
     setStreamingAudioId(null);
 
-    const wsUrl = callWsUrl(sessionId);
+    const wsUrl = callWsUrl(sessionId, video);
     const ws = new WebSocket(wsUrl);
     callWsRef.current = ws;
 
@@ -1252,13 +1252,13 @@ export function ChatPage() {
 
   const handleVoiceCall = useCallback(() => {
     setShowCallOptions(false);
-    startCall();
+    startCall(false);
   }, [startCall]);
 
   const handleVideoCall = useCallback(() => {
     setShowCallOptions(false);
     setIsVideoCalling(true);
-    startCall();
+    startCall(true);
   }, [startCall]);
 
   /** TTS 相关状态已移除，统一使用模型音频输出 */

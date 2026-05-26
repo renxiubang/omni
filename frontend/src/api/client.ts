@@ -120,11 +120,12 @@ export async function streamVoice(
   await consumeSse(res, onEvent);
 }
 
-export function callWsUrl(sessionId: string) {
+export function callWsUrl(sessionId: string, video = false) {
   const loc = window.location;
   const proto = loc.protocol === "https:" ? "wss:" : "ws:";
   const host = API_BASE ? new URL(API_BASE).host : loc.host;
-  return `${proto}//${host}/api/call?session_id=${encodeURIComponent(sessionId)}`;
+  const videoParam = video ? "&video=1" : "";
+  return `${proto}//${host}/api/call?session_id=${encodeURIComponent(sessionId)}${videoParam}`;
 }
 
 /**

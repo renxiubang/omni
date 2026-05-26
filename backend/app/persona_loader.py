@@ -23,6 +23,7 @@ class PersonaStore:
     def __init__(self) -> None:
         self._personas: dict[str, Persona] = {}
         self._default_key: str = "english_teacher"
+        self._call_prompts: dict[str, str] = {}
 
     def load(self, path: str | Path) -> None:
         with open(path, encoding="utf-8") as f:
@@ -30,6 +31,10 @@ class PersonaStore:
         self._default_key = data.get("default_persona", "english_teacher")
         for key, pdata in data.get("personas", {}).items():
             self._personas[key] = Persona(key, pdata)
+        # 加载通话级别提示词
+        raw_call_prompts = data.get("call_prompts", {})
+        if isinstance(raw_call_prompts, dict):
+            self._call_prompts = {k: str(v).strip() for k, v in raw_call_prompts.items()}
 
     def get(self, key: str | None = None) -> Persona:
         key = key or self._default_key
@@ -39,6 +44,10 @@ class PersonaStore:
 
     def list_all(self) -> list[Persona]:
         return list(self._personas.values())
+
+    def get_call_prompt(self, key: str) -> str:
+        """获取通话级别的附加提示词，不存在则返回空字符串。"""
+        return self._call_prompts.get(key, "")
 
     @property
     def default_key(self) -> str:

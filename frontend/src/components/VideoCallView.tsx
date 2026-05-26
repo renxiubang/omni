@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 
 interface VideoCallViewProps {
   /** 当前通话的 WebSocket 引用，用于发送 image_chunk */
@@ -13,6 +13,7 @@ interface VideoCallViewProps {
  * - 打开摄像头本地预览（右上角悬浮）
  * - 1fps 截帧编码为 JPEG base64 通过 WebSocket 发送
  * - 复用现有语音通话的 WebSocket 连接，仅增加图像帧数据
+ * - 支持按住拖动窗口位置
  *
  * DashScope 要求：
  * - 图像格式 JPEG，推荐 480P/720P
@@ -24,6 +25,56 @@ export function VideoCallView({ wsRef, onClose }: VideoCallViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const frameTimerRef = useRef<number | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 拖动状态
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const isDragging = useRef(false);
+  const dragStart = useRef({ x: 0, y: 0, left: 0, top: 0 });
+  const initialized = useRef(false);
+
+  // 初始位置：右上角
+  useEffect(() => {
+    if (!initialized.current) {
+      initialized.current = true;
+      setPos({ x: window.innerWidth - 256, y: 80 });
+    }
+  }, []);
+
+  // 窗口 resize 时保持在可视区域内
+  useEffect(() => {
+    const onResize = () => {
+      setPos((prev) => ({
+        x: Math.min(Math.max(0, prev.x), window.innerWidth - 240),
+        y: Math.min(Math.max(0, prev.y), window.innerHeight - 200),
+      }));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // 拖动事件
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    // 不在关闭按钮上拖
+    if ((e.target as HTMLElement).closest("button")) return;
+    isDragging.current = true;
+    dragStart.current = { x: e.clientX, y: e.clientY, left: pos.x, top: pos.y };
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  }, [pos]);
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!isDragging.current) return;
+    const dx = e.clientX - dragStart.current.x;
+    const dy = e.clientY - dragStart.current.y;
+    setPos({
+      x: dragStart.current.left + dx,
+      y: dragStart.current.top + dy,
+    });
+  }, []);
+
+  const onPointerUp = useCallback(() => {
+    isDragging.current = false;
+  }, []);
 
   useEffect(() => {
     // 1. 打开摄像头
@@ -103,14 +154,27 @@ export function VideoCallView({ wsRef, onClose }: VideoCallViewProps) {
   }, []);
 
   return (
-    <div className="fixed top-20 right-4 w-60 rounded-xl overflow-hidden shadow-lg bg-black z-50">
+    <div
+      ref={containerRef}
+      className="fixed w-60 rounded-xl overflow-hidden shadow-lg bg-black z-50 select-none"
+      style={{
+        left: pos.x,
+        top: pos.y,
+        cursor: isDragging.current ? "grabbing" : "grab",
+        touchAction: "none",
+      }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+    >
       {/* 摄像头本地预览（镜面翻转） */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        className="w-full h-full object-cover"
+        className="w-full h-full object-cover pointer-events-none"
         style={{ transform: "scaleX(-1)" }}
       />
 

@@ -89,7 +89,7 @@ def _run_voiceprint_identify(wav_path: str, user_id: int) -> dict | None:
 
 
 @router.websocket("/api/call")
-async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
+async def call_ws(ws: WebSocket, session_id: str = Query(...), video: bool = Query(False)) -> None:
     await ws.accept()
     session = session_store.get(session_id)
     if not session:
@@ -100,6 +100,12 @@ async def call_ws(ws: WebSocket, session_id: str = Query(...)) -> None:
     # 获取人格 system prompt
     persona = persona_store.get(session.persona or None)
     instructions = persona.system_prompt
+
+    # 视频通话：追加视觉注意力判断指令（来自配置文件 call_prompts.video_attention）
+    if video:
+        video_prompt = persona_store.get_call_prompt("video_attention")
+        if video_prompt:
+            instructions += "\n\n" + video_prompt
 
     # 如果开启了单词本训练模式，追加约束指令（放在人格 prompt 前面，优先级更高）
     from app.services.wordbook_trainer import wordbook_trainer as wt
