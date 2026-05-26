@@ -31,10 +31,10 @@ export function useVoicePrint(userId: number) {
   // 音量状态 (0-100)
   const [volumeLevel, setVolumeLevel] = useState(0);
 
-  // MediaRecorder 引用
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
-  const recordedMimeTypeRef = useRef<string>("audio/webm");
+  // PCM 采集相关引用（代替 MediaRecorder，确保与通话端 AudioWorklet 一致）
+  const pcmChunksRef = useRef<Int16Array[]>([]);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   // 音量分析相关引用
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -51,54 +51,20 @@ export function useVoicePrint(userId: number) {
 
       // 获取麦克风权限
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
 
-      // 创建 MediaRecorder，使用浏览器支持的格式
-      let mimeType = "audio/webm";
-      if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
-        mimeType = "audio/webm;codecs=opus";
-      } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
-        mimeType = "audio/mp4";
-      } else if (MediaRecorder.isTypeSupported("audio/webm")) {
-        mimeType = "audio/webm";
-      }
+      // 重置 PCM 缓冲区
+      pcmChunksRef.current = [];
 
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = mediaRecorder;
-      recordedChunksRef.current = [];
-      recordedMimeTypeRef.current = mediaRecorder.mimeType;
+      // 创建 AudioContext（与通话端 AudioWorklet 同样的 PCM 采集路径）
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
 
-      // 处理数据可用事件
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          recordedChunksRef.current.push(event.data);
-        }
-      };
-
-      // 处理录音停止事件
-      mediaRecorder.onstop = () => {
-        // 使用实际的 mimeType 创建 Blob
-        const actualMimeType = recordedMimeTypeRef.current;
-        const audioBlob = new Blob(recordedChunksRef.current, {
-          type: actualMimeType,
-        });
-        setAudioBlob(audioBlob);
-
-        // 创建 URL
-        const url = URL.createObjectURL(audioBlob);
-        setAudioUrl(url);
-
-        // 停止所有音轨
-        stream.getTracks().forEach((track) => track.stop());
-      };
-
-      // 设置音量分析
+      // 设置音量分析（AnalyserNode）
       try {
-        const audioContext = new AudioContext();
-        const source = audioContext.createMediaStreamSource(stream);
         const analyser = audioContext.createAnalyser();
         analyser.fftSize = 256;
         source.connect(analyser);
-        audioContextRef.current = audioContext;
         analyserRef.current = analyser;
 
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -110,7 +76,6 @@ export function useVoicePrint(userId: number) {
             sum += dataArray[i];
           }
           const average = sum / dataArray.length;
-          // 将音量映射到 0-100 范围（加入阈值避免噪声抖动）
           const raw = (average / 255) * 100;
           const volume = raw < 5 ? 0 : Math.min(100, Math.round(raw));
           setVolumeLevel(volume);
@@ -121,8 +86,24 @@ export function useVoicePrint(userId: number) {
         console.warn("Failed to setup volume analyser:", analyserErr);
       }
 
-      // 开始录音
-      mediaRecorder.start();
+      // 设置 PCM 采集（ScriptProcessorNode，与通话端 AudioWorklet 同一条采集路径）
+      const BUFFER_SIZE = 4096;
+      const processor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
+      processor.onaudioprocess = (event) => {
+        if (!isRecordingRef.current) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const int16 = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+          const s = Math.max(-1, Math.min(1, input[i]));
+          int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        pcmChunksRef.current.push(int16);
+      };
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      processorRef.current = processor;
+      audioContextRef.current = audioContext;
+
       isRecordingRef.current = true;
       setIsRecording(true);
     } catch (err) {
@@ -134,15 +115,54 @@ export function useVoicePrint(userId: number) {
   /**
    * 停止录音
    */
-  const stopRecording = useCallback(() => {
-    if (
-      mediaRecorderRef.current &&
-      mediaRecorderRef.current.state !== "inactive"
-    ) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      isRecordingRef.current = false;
+  /** 将 PCM Int16 chunks 编码为 WAV Blob */
+  function createWavBlob(chunks: Int16Array[], sampleRate: number): Blob {
+    let totalLen = 0;
+    for (const c of chunks) totalLen += c.length;
+    const buf = new ArrayBuffer(44 + totalLen * 2);
+    const v = new DataView(buf);
+    const writeStr = (offset: number, s: string) => {
+      for (let i = 0; i < s.length; i++) v.setUint8(offset + i, s.charCodeAt(i));
+    };
+    writeStr(0, 'RIFF');
+    v.setUint32(4, 36 + totalLen * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    v.setUint32(16, 16, true);       // chunk size
+    v.setUint16(20, 1, true);         // PCM
+    v.setUint16(22, 1, true);         // mono
+    v.setUint32(24, sampleRate, true);
+    v.setUint32(28, sampleRate * 2, true); // byte rate
+    v.setUint16(32, 2, true);         // block align
+    v.setUint16(34, 16, true);        // bits per sample
+    writeStr(36, 'data');
+    v.setUint32(40, totalLen * 2, true);
+    let offset = 44;
+    for (const c of chunks) {
+      for (let i = 0; i < c.length; i++) {
+        v.setInt16(offset, c[i], true);
+        offset += 2;
+      }
     }
+    return new Blob([buf], { type: 'audio/wav' });
+  }
+
+  const stopRecording = useCallback(() => {
+    isRecordingRef.current = false;
+    setIsRecording(false);
+
+    // 断开 PCM 采集处理器
+    if (processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current = null;
+    }
+
+    // 编码 PCM 数据为 WAV Blob
+    const sampleRate = audioContextRef.current?.sampleRate ?? 16000;
+    const wavBlob = createWavBlob(pcmChunksRef.current, sampleRate);
+    setAudioBlob(wavBlob);
+    const url = URL.createObjectURL(wavBlob);
+    setAudioUrl(url);
 
     // 清理音量分析
     if (animationFrameRef.current) {
@@ -152,6 +172,11 @@ export function useVoicePrint(userId: number) {
     if (audioContextRef.current) {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
+    }
+    // 停止所有音轨
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     }
     setVolumeLevel(0);
   }, []);
@@ -224,7 +249,7 @@ export function useVoicePrint(userId: number) {
       try {
         // 将 Blob 转换为 File 对象
         const files = audioSamples.map((blob, index) => {
-          return new File([blob], `sample_${index}.webm`, {
+          return new File([blob], `sample_${index}.wav`, {
             type: blob.type,
           });
         });

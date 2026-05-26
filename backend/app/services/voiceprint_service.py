@@ -192,7 +192,7 @@ def identify_embedding(
             best_id = pid
             best_name = pname
 
-    if best_score >= threshold and best_id is not None:
+    if best_score >= threshold - 1e-9 and best_id is not None:
         logger.info(
             "Voiceprint identify: matched profile=%s (id=%d) score=%.4f",
             best_name, best_id, best_score,
